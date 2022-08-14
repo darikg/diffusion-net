@@ -53,3 +53,5 @@ pyrightconfig.json
 *.exe
 *.out
 *.app
+/experiments/regression_0/data/*
+/.idea/*
