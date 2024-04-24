@@ -12,6 +12,7 @@ from pandas import DataFrame, read_parquet
 from torch.utils.data import Dataset
 
 import potpourri3d as pp3d
+from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net
@@ -60,8 +61,9 @@ class GaDataset(Dataset):
 
         scenes = scenes.join(responses, on='scene', how='inner').set_index('scene')
 
-        for mesh_file in scenes.mesh:
-            print(str(mesh_file))
+        print('Pre-calculating operators')
+        for mesh_file in tqdm(scenes.mesh):
+            # print(str(mesh_file))
             verts, faces = pp3d.read_mesh(str(root_dir / mesh_file))
             verts = torch.tensor(verts).float()
             faces = torch.tensor(faces)
