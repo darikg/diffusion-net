@@ -18,9 +18,22 @@ from ga_dataset import GaDataset
 
 # Parse a few args
 parser = argparse.ArgumentParser()
-parser.add_argument("--input_features", type=str, help="what features to use as input ('xyz' or 'hks') default: hks", default = 'hks')
-# parser.add_argument("--dataset_type", type=str, help="which variant of the dataset to use ('original', or 'simplified') default: original", default = 'original')
-# parser.add_argument("--split_size", type=int, help="how large of a training set per-class default: 10", default=10)
+parser.add_argument(
+    "--input_features",
+    type=str,
+    help="what features to use as input ('xyz' or 'hks') default: hks",
+    default='hks',
+)
+parser.add_argument(
+    '--file',
+    type=str,
+    help='the hdf file to load data from',
+)
+parser.add_argument(
+    '--channel',
+    type=int,
+    help='which channel to use',
+)
 args = parser.parse_args()
 
 # system things
@@ -42,13 +55,14 @@ label_smoothing_fac = 0.2
 
 
 # Important paths
-base_path = os.path.dirname(__file__)
-op_cache_dir = os.path.join(base_path, "data", "op_cache")
-dataset_path = os.path.join(base_path, "data")
+data_file = Path(args.file)
+data_dir = data_file.parent
+op_cache_dir = data_dir / "op_cache"
+op_cache_dir.mkdir(exist_ok=True)
 
 # === Load datasets
 train_dataset, test_dataset = GaDataset.load_lineages(
-    root_dir=Path(dataset_path), k_eig=k_eig, op_cache_dir=op_cache_dir)
+    data_file=data_file, k_eig=k_eig, op_cache_dir=op_cache_dir, channel=args.channel)
 
 train_loader = DataLoader(train_dataset,  batch_size=None, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=None)

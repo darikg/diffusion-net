@@ -10,11 +10,14 @@ dependencies:
   # - plyfile
   - tqdm
   - igl
+  - ipython
   - pytorch
   - torchvision
   - torchaudio
   - cudatoolkit=11.6
+  - scikit-learn
+  - pandas
+  - pytables
   - pip:
     - potpourri3d==0.0.3
     - robust-laplacian==0.2.4
-    - sklearn
