@@ -19,6 +19,7 @@ dependencies:
   - scikit-learn
   - pandas
   - pytables
+  - jupyter
   - pip:
     - potpourri3d
     - robust-laplacian

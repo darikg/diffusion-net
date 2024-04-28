@@ -3,19 +3,10 @@ import sys
 from pathlib import Path
 from typing import cast
 
-import torch
-from pandas import DataFrame, read_hdf
-from torch.utils.data import Dataset
-
-import potpourri3d as pp3d
-from tqdm import tqdm
-import os
-import sys
-from pathlib import Path
-
 import potpourri3d as pp3d
 import torch
 from pandas import DataFrame
+from pandas import read_hdf
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -56,11 +47,8 @@ class GaDataset(Dataset):
         scenes = scenes[scenes['simplified'] != '']
         assert isinstance(channel, int)
         responses = cast(DataFrame, read_hdf(data_file, 'responses')).reset_index()
-        responses = responses[responses['channel'] == channel]
-        scenes = (
-            scenes.set_index('scene')
-            .join(responses.set_index('scene'), on='scene', how='inner')
-        )
+        responses = responses[responses['channel'] == channel].set_index('scene')
+        scenes = scenes.join(responses, on='scene', how='inner')
 
         print('Pre-calculating operators')
         for mesh_file in tqdm(scenes.simplified):
