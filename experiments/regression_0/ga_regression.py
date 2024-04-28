@@ -34,6 +34,11 @@ parser.add_argument(
     type=int,
     help='which channel to use',
 )
+parser.add_argument(
+    '--n-epoch',
+    type=int,
+    help='number of epochs',
+)
 args = parser.parse_args()
 
 # system things
@@ -45,7 +50,6 @@ input_features = args.input_features  # one of ['xyz', 'hks']
 k_eig = 128
 
 # training settings
-n_epoch = 200
 lr = 1e-3
 decay_every = 50
 decay_rate = 0.5
@@ -189,9 +193,13 @@ def test():
 
 
 print("Training...")
-
-for epoch in range(n_epoch):
+for epoch in range(args.n_epoch):
     train_loss = train_epoch(epoch)
     test_loss = test()
     print("Epoch {} - Train overall: {:.5e}  Test overall: {:.5e}".format(epoch, train_loss, test_loss))
+
+
+model_save_path = str(data_dir / 'trained.pth')
+print(" ==> saving last model to " + model_save_path)
+torch.save(model.state_dict(), model_save_path)
 
