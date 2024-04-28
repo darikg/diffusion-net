@@ -2,9 +2,10 @@ channels:
   # - defaults
   - pytorch
   - conda-forge
+  - nvidia
 
 dependencies:
-  - python=3.8.13
+  - python=3.10
   - pip
   # - pillow
   # - plyfile
@@ -13,11 +14,11 @@ dependencies:
   - ipython
   - pytorch
   - torchvision
-  - torchaudio
-  - cudatoolkit=11.6
+  # - cudatoolkit=11.6
+  - pytorch-cuda=12.1
   - scikit-learn
   - pandas
   - pytables
   - pip:
-    - potpourri3d==0.0.3
-    - robust-laplacian==0.2.4
+    - potpourri3d
+    - robust-laplacian
