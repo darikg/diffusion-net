@@ -62,11 +62,11 @@ for sample in your_dataset:
     
     verts = sample.vertices  # (Vx3 array of vertices)
     faces = sample.faces     # (Fx3 array of faces, None for point cloud) 
-    
+    [ga_dataset.py](experiments%2Fregression_0%2Fga_dataset.py)
     # center and unit scale
     verts = diffusion_net.geometry.normalize_positions(verts)
     
-    # Get the geometric operators needed to evaluate DiffusionNet. This routine 
+    # Get the geometric operators needed to evaluate DiffusionNet. This rout[ga_dataset.py](experiments%2Fregression_0%2Fga_dataset.py)ine 
     # automatically populates a cache, precomputing only if needed.
     # TIP: Do this once in a dataloader and store in memory to further improve 
     # performance; see examples.

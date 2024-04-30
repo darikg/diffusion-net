@@ -12,6 +12,7 @@ dependencies:
   - tqdm
   - igl
   - ipython
+  - matplotlib
   - pytorch
   - torchvision
   # - cudatoolkit=11.6

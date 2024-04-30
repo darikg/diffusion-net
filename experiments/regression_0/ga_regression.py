@@ -1,7 +1,11 @@
+from __future__ import annotations
+import logging
 import os
 import sys
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Tuple
 
 import torch
 from torch.utils.data import DataLoader
@@ -11,85 +15,94 @@ import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net
 from diffusion_net.utils import toNP
-from ga_dataset import GaDataset
+from ga_dataset import GaDataset, make_model
 
 
-# === Options
-
-# Parse a few args
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--input_features",
-    type=str,
-    help="what features to use as input ('xyz' or 'hks') default: hks",
-    default='hks',
-)
-parser.add_argument(
-    '--file',
-    type=str,
-    help='the hdf file to load data from',
-)
-parser.add_argument(
-    '--channel',
-    type=int,
-    help='which channel to use',
-)
-parser.add_argument(
-    '--n-epoch',
-    type=int,
-    help='number of epochs',
-)
-args = parser.parse_args()
-
-# system things
-device = torch.device('cuda:0')
-dtype = torch.float32
-
-# model
-input_features = args.input_features  # one of ['xyz', 'hks']
-k_eig = 128
-
-# training settings
-lr = 1e-3
-decay_every = 50
-decay_rate = 0.5
-# augment_random_rotate = (input_features == 'xyz')
-augment_random_rotate = False
-label_smoothing_fac = 0.2
+@dataclass
+class Options:
+    input_features: str
+    data_file: Path
+    data_dir: Path
+    log_file: Path
+    channel: int
+    k_eig: int = 128
+    learning_rate: float = 1e-3
+    decay_every = 50
+    decay_rate = 0.5
+    augment_random_rotate = False
 
 
-# Important paths
-data_file = Path(args.file)
-data_dir = data_file.parent
-op_cache_dir = data_dir / "op_cache"
-op_cache_dir.mkdir(exist_ok=True)
 
-# === Load datasets
-train_dataset, test_dataset = GaDataset.load_lineages(
-    data_file=data_file, k_eig=k_eig, op_cache_dir=op_cache_dir, channel=args.channel)
+    @staticmethod
+    def parse() -> Options:
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "--input_features",
+            type=str,
+            help="what features to use as input ('xyz' or 'hks') default: hks",
+            default='hks',
+        )
+        parser.add_argument(
+            '--file',
+            type=str,
+            help='the hdf file to load data from',
+        )
+        parser.add_argument(
+            '--channel',
+            type=int,
+            help='which channel to use',
+        )
+        parser.add_argument(
+            '--n-epoch',
+            type=int,
+            help='number of epochs',
+        )
+        args = parser.parse_args()
+        data_file = Path(args.file)
+        data_dir = data_file.parent
+        log_file = data_dir / 'log.txt'
+        if log_file.exists():
+            log_file.unlink()
 
-train_loader = DataLoader(train_dataset,  batch_size=None, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=None)
+        return Options(
+            data_file=data_file,
+            data_dir=data_dir,
+            log_file=log_file,
+            channel=args.channel,
+            input_features=args.input_features,
 
+        )
 
-# === Create the model
-C_in = {'xyz': 3, 'hks': 16}[input_features]  # dimension of input features
+    def init_log(self):
+        logging.basicConfig(
+            filename=self.log_file,
+            level=logging.INFO,
+            format='[%(asctime)s] {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
 
-model = diffusion_net.layers.DiffusionNet(
-    C_in=C_in,
-    C_out=1,
-    C_width=64,
-    N_block=4,
-    # last_activation=lambda x : torch.nn.functional.log_softmax(x,dim=-1),
-    outputs_at='global_mean',
-    dropout=False,
-)
+        # set up logging to console
+        console = logging.StreamHandler()
+        console.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+        console.setFormatter(formatter)
+        logging.getLogger('').addHandler(console)
 
+    def load_datasets(self) -> Tuple[GaDataset, GaDataset]:
+        train_dataset, test_dataset = GaDataset.load_lineages(
+            data_file=self.data_file, k_eig=self.k_eig, channel=self.channel)
 
-model = model.to(device)
+    def make_model(self, C_in):
+        return diffusion_net.layers.DiffusionNet(
+            C_in=C_in,
+            C_out=1,
+            C_width=64,
+            N_block=4,
+            last_activation=None,
+            outputs_at='global_mean',
+            dropout=False,
+        )
 
-# === Optimize
-optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
 
 def train_epoch(epoch):
@@ -191,6 +204,20 @@ def test():
     mean_loss = np.mean(losses)
     return mean_loss
 
+
+def main():
+    logger = logging.getLogger(__name__)
+    device = torch.device('cuda:0')
+    opts = Options.parse()
+    train_dataset, test_dataset = opts.load_datasets()
+    train_loader = DataLoader(train_dataset, batch_size=None, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=None)
+
+    model =
+    model = model.to(device)
+
+    # === Optimize
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
 print("Training...")
 for epoch in range(args.n_epoch):

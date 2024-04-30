@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import cast
+from typing import cast, Literal
 
 import potpourri3d as pp3d
 import torch
@@ -42,13 +42,14 @@ class GaDataset(Dataset):
         return verts, faces, frames, mass, L, evals, evecs, gradX, gradY, response
 
     @staticmethod
-    def load_lineages(data_file: Path, k_eig, channel: int, op_cache_dir=None):
+    def load_lineages(data_file: Path, k_eig, channel: int):
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes')).reset_index()
         scenes = scenes[scenes['simplified'] != '']
         assert isinstance(channel, int)
         responses = cast(DataFrame, read_hdf(data_file, 'responses')).reset_index()
         responses = responses[responses['channel'] == channel].set_index('scene')
         scenes = scenes.join(responses, on='scene', how='inner')
+        op_cache_dir = data_file.parent / 'op_cache'
 
         print('Pre-calculating operators')
         for mesh_file in tqdm(scenes.simplified):
