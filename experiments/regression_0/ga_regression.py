@@ -15,7 +15,8 @@ import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net
 from diffusion_net.utils import toNP
-from ga_dataset import GaDataset, make_model
+from diffusion_net.layers import DiffusionNet
+from ga_dataset import GaDataset
 
 
 @dataclass
@@ -24,14 +25,13 @@ class Options:
     data_file: Path
     data_dir: Path
     log_file: Path
+    n_epoch: int
     channel: int
     k_eig: int = 128
     learning_rate: float = 1e-3
     decay_every = 50
     decay_rate = 0.5
     augment_random_rotate = False
-
-
 
     @staticmethod
     def parse() -> Options:
@@ -69,14 +69,14 @@ class Options:
             data_dir=data_dir,
             log_file=log_file,
             channel=args.channel,
+            n_epoch=args.n_epoch,
             input_features=args.input_features,
-
         )
 
     def init_log(self):
         logging.basicConfig(
             filename=self.log_file,
-            level=logging.INFO,
+            level=logging.DEBUG,
             format='[%(asctime)s] {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
@@ -91,10 +91,11 @@ class Options:
     def load_datasets(self) -> Tuple[GaDataset, GaDataset]:
         train_dataset, test_dataset = GaDataset.load_lineages(
             data_file=self.data_file, k_eig=self.k_eig, channel=self.channel)
+        return train_dataset, test_dataset
 
-    def make_model(self, C_in):
-        return diffusion_net.layers.DiffusionNet(
-            C_in=C_in,
+    def make_model(self) -> DiffusionNet:
+        return DiffusionNet(
+            C_in=3 if self.input_features == 'xyz' else 16,
             C_out=1,
             C_width=64,
             N_block=4,
@@ -103,130 +104,123 @@ class Options:
             dropout=False,
         )
 
+    def experiment(self) -> Experiment:
+        device = torch.device('cuda:0')
+        train_dataset, test_dataset = self.load_datasets()
+        model = self.make_model()
+        model = model.to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
+        return Experiment(
+            opts=self,
+            model=model,
+            device=device,
+            optimizer=optimizer,
+            train_dataset=train_dataset,
+            test_dataset=test_dataset,
+        )
 
 
-def train_epoch(epoch):
 
-    # Implement lr decay
-    if epoch > 0 and epoch % decay_every == 0:
-        global lr 
-        lr *= decay_rate
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr 
+@dataclass
+class Experiment:
+    opts: Options
+    model: DiffusionNet
+    device: torch.device
+    optimizer: torch.optim.Adam
+    train_dataset: GaDataset
+    test_dataset: GaDataset
 
-    # Set model to 'train' mode
-    model.train()
-    optimizer.zero_grad()
-    
-    losses = []
-
-    for data in tqdm(train_loader):
-
-        # Get data
+    def load_item(self, data):
         verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels = data
+        verts = verts.to(self.device)
+        faces = faces.to(self.device)
+        _frames = frames.to(self.device)
+        mass = mass.to(self.device)
+        L = L.to(self.device)
+        evals = evals.to(self.device)
+        evecs = evecs.to(self.device)
+        gradX = gradX.to(self.device)
+        gradY = gradY.to(self.device)
+        labels = labels.to(self.device)
 
-        # Move to device
-        verts = verts.to(device)
-        faces = faces.to(device)
-        frames = frames.to(device)
-        mass = mass.to(device)
-        L = L.to(device)
-        evals = evals.to(device)
-        evecs = evecs.to(device)
-        gradX = gradX.to(device)
-        gradY = gradY.to(device)
-        labels = labels.to(device)
-        
-        # Randomly rotate positions
-        if augment_random_rotate:
-            verts = diffusion_net.utils.random_rotate_points(verts)
+        # if augment_random_rotate:
+        #     verts = diffusion_net.utils.random_rotate_points(verts)
 
         # Construct features
-        if input_features == 'xyz':
+        if self.opts.input_features == 'xyz':
             features = verts
-        elif input_features == 'hks':
+        elif self.opts.input_features == 'hks':
             features = diffusion_net.geometry.compute_hks_autoscale(evals, evecs, 16)
+        else:
+            raise NotImplementedError(self.opts.input_features)
 
         # Apply the model
-        preds = model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
+        preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
+        return labels, preds
 
-        # Evaluate loss
-        # loss = diffusion_net.utils.label_smoothing_log_loss(preds, labels, label_smoothing_fac)
-        loss = torch.mean(torch.square(preds - labels))
-        losses.append(toNP(loss))
-        loss.backward()
+    def train_epoch(self, loader: DataLoader, epoch: int) -> float:
+        # Returns mean training loss
+        if epoch > 0 and epoch % self.opts.decay_every == 0:
+            self.opts.learning_rate *= self.opts.decay_rate
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.opts.learning_rate
 
-        # Step the optimizer
-        optimizer.step()
-        optimizer.zero_grad()
+        # Set model to 'train' mode
+        self.model.train()
+        self.optimizer.zero_grad()
+        losses = []
 
-    train_loss = np.mean(losses)
-    return train_loss
+        for data in tqdm(loader):
+            labels, preds = self.load_item(data)
 
-
-# Do an evaluation pass on the test dataset 
-def test():
-    
-    model.eval()
-    losses = []
-
-    with torch.no_grad():
-    
-        for data in tqdm(test_loader):
-
-            # Get data
-            verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels = data
-
-            # Move to device
-            verts = verts.to(device)
-            faces = faces.to(device)
-            frames = frames.to(device)
-            mass = mass.to(device)
-            L = L.to(device)
-            evals = evals.to(device)
-            evecs = evecs.to(device)
-            gradX = gradX.to(device)
-            gradY = gradY.to(device)
-            labels = labels.to(device)
-            
-            # Construct features
-            if input_features == 'xyz':
-                features = verts
-            elif input_features == 'hks':
-                features = diffusion_net.geometry.compute_hks_autoscale(evals, evecs, 16)
-
-            # Apply the model
-            preds = model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
-
+            # Evaluate loss
+            # loss = diffusion_net.utils.label_smoothing_log_loss(preds, labels, label_smoothing_fac)
             loss = torch.mean(torch.square(preds - labels))
             losses.append(toNP(loss))
+            loss.backward()
 
-    mean_loss = np.mean(losses)
-    return mean_loss
+            # Step the optimizer
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+
+        return np.mean(losses)
+
+    def test(self, loader):
+        # Returns mean loss
+        self.model.eval()
+        losses = []
+
+        with torch.no_grad():
+            for data in tqdm(loader):
+                labels, preds = self.load_item(data)
+                loss = torch.mean(torch.square(preds - labels))
+                losses.append(toNP(loss))
+
+        return np.mean(losses)
 
 
 def main():
     logger = logging.getLogger(__name__)
-    device = torch.device('cuda:0')
     opts = Options.parse()
-    train_dataset, test_dataset = opts.load_datasets()
-    train_loader = DataLoader(train_dataset, batch_size=None, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=None)
+    opts.init_log()
+    logger.debug("what")
+    logger.info("huh")
+    logger.error("ggg")
 
-    model =
-    model = model.to(device)
+    exp = opts.experiment()
+    train_loader = DataLoader(exp.train_dataset, batch_size=None, shuffle=True)
+    test_loader = DataLoader(exp.test_dataset, batch_size=None)
 
-    # === Optimize
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
-print("Training...")
-for epoch in range(args.n_epoch):
-    train_loss = train_epoch(epoch)
-    test_loss = test()
-    print("Epoch {} - Train overall: {:.5e}  Test overall: {:.5e}".format(epoch, train_loss, test_loss))
+    for epoch in range(opts.n_epoch):
+        train_loss = exp.train_epoch(train_loader, epoch)
+        test_loss = exp.test(test_loader)
+        logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
 
 
-model_save_path = str(data_dir / 'trained.pth')
-print(" ==> saving last model to " + model_save_path)
-torch.save(model.state_dict(), model_save_path)
+    model_save_path = str(opts.data_dir / 'trained.pth')
+    logger.debug("Saving last model to " + model_save_path)
+    torch.save(exp.model.state_dict(), model_save_path)
 
+
+if __name__ == '__main__':
+    main()
