@@ -31,6 +31,7 @@ class Options:
     learning_rate: float = 1e-3
     decay_every = 50
     decay_rate = 0.5
+    dropout: bool = False
     augment_random_rotate = False
 
     @staticmethod
@@ -57,6 +58,11 @@ class Options:
             type=int,
             help='number of epochs',
         )
+        parser.add_argument(
+            '--dropout',
+            action='store_true',
+            help='enable dropout',
+        )
         args = parser.parse_args()
         data_file = Path(args.file)
         data_dir = data_file.parent
@@ -71,6 +77,7 @@ class Options:
             channel=args.channel,
             n_epoch=args.n_epoch,
             input_features=args.input_features,
+            dropout=args.dropout,
         )
 
     def init_log(self):
@@ -101,7 +108,7 @@ class Options:
             N_block=4,
             last_activation=None,
             outputs_at='global_mean',
-            dropout=False,
+            dropout=self.dropout,
         )
 
     def experiment(self) -> Experiment:
@@ -203,9 +210,6 @@ def main():
     logger = logging.getLogger(__name__)
     opts = Options.parse()
     opts.init_log()
-    logger.debug("what")
-    logger.info("huh")
-    logger.error("ggg")
 
     exp = opts.experiment()
     train_loader = DataLoader(exp.train_dataset, batch_size=None, shuffle=True)
@@ -215,7 +219,6 @@ def main():
         train_loss = exp.train_epoch(train_loader, epoch)
         test_loss = exp.test(test_loader)
         logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
-
 
     model_save_path = str(opts.data_dir / 'trained.pth')
     logger.debug("Saving last model to " + model_save_path)
