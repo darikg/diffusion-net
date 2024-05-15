@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 import potpourri3d as pp3d
+from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net
@@ -101,8 +102,8 @@ class Shrec11MeshDataset_Original(Dataset):
         frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(verts, faces, k_eig=self.k_eig, op_cache_dir=self.op_cache_dir)
         return verts, faces, frames, mass, L, evals, evecs, gradX, gradY, label
 
-class Shrec11MeshDataset_Simplified(Dataset):
 
+class Shrec11MeshDataset_Simplified(Dataset):
     # NOTE: Remeshed data from MeshCNN authors.
     # Can be downloaded here (link from the MeshCNN authors): https://www.dropbox.com/s/w16st84r6wc57u7/shrec_16.tar.gz. Note that despite the filename, this really is the shapes from the SHREC 2011 dataset. Extract it to the `[ROOT_DIR]/raw/` directory.
 
@@ -113,7 +114,6 @@ class Shrec11MeshDataset_Simplified(Dataset):
         self.split_size = split_size # pass None to take all entries (except those in exclude_dict)
         self.k_eig = k_eig
         self.op_cache_dir = op_cache_dir
-
         self.class_names = [ 'alien', 'ants', 'armadillo', 'bird1', 'bird2', 'camel', 'cat', 'centaur', 'dinosaur', 'dino_ske', 'dog1', 'dog2', 'flamingo', 'glasses', 'gorilla', 'hand', 'horse', 'lamp', 'laptop', 'man', 'myScissor', 'octopus', 'pliers', 'rabbit', 'santa', 'shark', 'snake', 'spiders', 'two_balls', 'woman']
         
         self.entries = {}
@@ -125,7 +125,7 @@ class Shrec11MeshDataset_Simplified(Dataset):
 
         raw_path = os.path.join(self.root_dir, 'raw', "shrec_16")
 
-        for class_idx, class_name in enumerate(self.class_names):
+        for class_idx, class_name in tqdm(enumerate(self.class_names)):
             
             # load both train and test subdirectories; we are manually regenerating random splits to do multiple trials
             mesh_files = []
@@ -161,7 +161,7 @@ class Shrec11MeshDataset_Simplified(Dataset):
 
                 added += 1
 
-            print(class_name + " -- " + " ".join([os.path.basename(p) for p in self.entries[class_name]]))
+            # print(class_name + " -- " + " ".join([os.path.basename(p) for p in self.entries[class_name]]))
 
             if(split_size is not None and added < split_size):
                 raise ValueError("could not find enough entries to generate requested split")

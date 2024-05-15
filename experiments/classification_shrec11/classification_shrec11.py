@@ -1,6 +1,11 @@
 import os
 import sys
 import argparse
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -11,141 +16,103 @@ import diffusion_net
 from shrec11_dataset import Shrec11MeshDataset_Simplified, Shrec11MeshDataset_Original
 
 
-# === Options
+@dataclass
+class Options:
+    device: Any
+    n_epoch: int
+    lr: float
+    input_features: str
+    augment_random_rotate: bool
+    k_eig: int = 128
+    decay_every: int = 50
+    decay_rate: float = 0.5
+    label_smoothing_fac: float = 0.2
+    base_path: Path = Path(__file__).parent
 
-# Parse a few args
-parser = argparse.ArgumentParser()
-parser.add_argument("--input_features", type=str, help="what features to use as input ('xyz' or 'hks') default: hks", default = 'hks')
-parser.add_argument("--dataset_type", type=str, help="which variant of the dataset to use ('original', or 'simplified') default: original", default = 'original')
-parser.add_argument("--split_size", type=int, help="how large of a training set per-class default: 10", default=10)
-args = parser.parse_args()
+    def load_datasets(self, dataset_type: str, split_size: int):
+        op_cache_dir = self.base_path / "data" / "op_cache"
+        if dataset_type == "simplified":
+            dataset_path = self.base_path / "data" / "simplified"
+            train_dataset = Shrec11MeshDataset_Simplified(
+                dataset_path, split_size=split_size, k_eig=self.k_eig, op_cache_dir=op_cache_dir)
 
-# system things
-device = torch.device('cuda:0')
-dtype = torch.float32
+            test_dataset = Shrec11MeshDataset_Simplified(
+                dataset_path, split_size=None, k_eig=self.k_eig, op_cache_dir=op_cache_dir,
+                exclude_dict=train_dataset.entries)
 
-# problem/dataset things
-n_class = 30
+        elif dataset_type == "original":
+            dataset_path = self.base_path / "data" / "original"
+            train_dataset = Shrec11MeshDataset_Original(
+                dataset_path, split_size=split_size, k_eig=self.k_eig, op_cache_dir=op_cache_dir)
 
-# model 
-input_features = args.input_features # one of ['xyz', 'hks']
-k_eig = 128
+            test_dataset = Shrec11MeshDataset_Original(
+                dataset_path, split_size=None, k_eig=self.k_eig, op_cache_dir=op_cache_dir,
+                exclude_dict=train_dataset.entries)
+        else:
+            raise ValueError("Unrecognized dataset type")
 
-# training settings
-n_epoch = 200
-lr = 1e-3
-decay_every = 50
-decay_rate = 0.5
-augment_random_rotate = (input_features == 'xyz')
-label_smoothing_fac = 0.2
+        train_loader = DataLoader(train_dataset, batch_size=None, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=None)
+        return train_loader, test_loader
 
-
-# Important paths
-base_path = os.path.dirname(__file__)
-op_cache_dir = os.path.join(base_path, "data", "op_cache")
-
-if args.dataset_type == "simplified":
-    dataset_path = os.path.join(base_path, "data/simplified")
-elif args.dataset_type == "original":
-    dataset_path = os.path.join(base_path, "data/original")
-else:
-    raise ValueError("Unrecognized dataset type")
-
-
-# === Load datasets
-
-# Train dataset
-if args.dataset_type == "simplified":
-    train_dataset = Shrec11MeshDataset_Simplified(dataset_path, split_size=args.split_size,
-                                                  k_eig=k_eig, op_cache_dir=op_cache_dir)
-elif args.dataset_type == "original":
-    train_dataset = Shrec11MeshDataset_Original(dataset_path, split_size=args.split_size,
-                                                  k_eig=k_eig, op_cache_dir=op_cache_dir)
-train_loader = DataLoader(train_dataset, batch_size=None, shuffle=True)
-
-# Test dataset
-if args.dataset_type == "simplified":
-    test_dataset = Shrec11MeshDataset_Simplified(dataset_path, split_size=None,
-                                                 k_eig=k_eig, op_cache_dir=op_cache_dir,
-                                                 exclude_dict=train_dataset.entries)
-elif args.dataset_type == "original":
-    test_dataset = Shrec11MeshDataset_Original(dataset_path, split_size=None,
-                                                 k_eig=k_eig, op_cache_dir=op_cache_dir,
-                                                 exclude_dict=train_dataset.entries)
-test_loader = DataLoader(test_dataset, batch_size=None)
+    def build_model(self, C_out: int):
+        C_in = 3 if self.input_features == 'xyz' else 16
+        return diffusion_net.layers.DiffusionNet(
+            C_in=C_in, C_out=C_out, C_width=64, N_block=4,
+            last_activation=lambda x: torch.nn.functional.log_softmax(x, dim=-1),
+            outputs_at='global_mean',
+            dropout=False,
+        )
 
 
-
-
-
-# === Create the model
-
-C_in={'xyz':3, 'hks':16}[input_features] # dimension of input features
-
-model = diffusion_net.layers.DiffusionNet(C_in=C_in,
-                                          C_out=n_class,
-                                          C_width=64, 
-                                          N_block=4, 
-                                          last_activation=lambda x : torch.nn.functional.log_softmax(x,dim=-1),
-                                          outputs_at='global_mean', 
-                                          dropout=False)
-
-
-model = model.to(device)
-
-# === Optimize
-optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
-def train_epoch(epoch):
-
+def train_epoch(epoch, optimizer, model, loader, opts: Options):
     # Implement lr decay
-    if epoch > 0 and epoch % decay_every == 0:
-        global lr 
-        lr *= decay_rate
+    if epoch > 0 and epoch % opts.decay_every == 0:
+        opts.lr *= opts.decay_rate
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr 
+            param_group['lr'] = opts.lr
 
-
-    # Set model to 'train' mode
     model.train()
     optimizer.zero_grad()
-    
+
     correct = 0
     total_num = 0
-    for data in tqdm(train_loader):
+    for data in tqdm(loader):
 
         # Get data
         verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels = data
 
         # Move to device
-        verts = verts.to(device)
-        faces = faces.to(device)
-        frames = frames.to(device)
-        mass = mass.to(device)
-        L = L.to(device)
-        evals = evals.to(device)
-        evecs = evecs.to(device)
-        gradX = gradX.to(device)
-        gradY = gradY.to(device)
-        labels = labels.to(device)
-        
+        verts = verts.to(opts.device)
+        faces = faces.to(opts.device)
+        frames = frames.to(opts.device)
+        mass = mass.to(opts.device)
+        L = L.to(opts.device)
+        evals = evals.to(opts.device)
+        evecs = evecs.to(opts.device)
+        gradX = gradX.to(opts.device)
+        gradY = gradY.to(opts.device)
+        labels = labels.to(opts.device)
+
         # Randomly rotate positions
-        if augment_random_rotate:
+        if opts.augment_random_rotate:
             verts = diffusion_net.utils.random_rotate_points(verts)
 
         # Construct features
-        if input_features == 'xyz':
+        if opts.input_features == 'xyz':
             features = verts
-        elif input_features == 'hks':
+        elif opts.input_features == 'hks':
             features = diffusion_net.geometry.compute_hks_autoscale(evals, evecs, 16)
+        else:
+            raise ValueError(opts.input_features)
 
         # Apply the model
         preds = model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
 
         # Evaluate loss
-        loss = diffusion_net.utils.label_smoothing_log_loss(preds, labels, label_smoothing_fac)
+        loss = diffusion_net.utils.label_smoothing_log_loss(preds, labels, opts.label_smoothing_fac)
         loss.backward()
-        
+
         # track accuracy
         pred_labels = torch.max(preds, dim=-1).indices
         this_correct = pred_labels.eq(labels).sum().item()
@@ -160,37 +127,38 @@ def train_epoch(epoch):
     return train_acc
 
 
-# Do an evaluation pass on the test dataset 
-def test():
-    
+def test(model, loader, opts: Options):
+
     model.eval()
-    
+
     correct = 0
     total_num = 0
     with torch.no_grad():
-    
-        for data in tqdm(test_loader):
+
+        for data in tqdm(loader):
 
             # Get data
             verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels = data
 
-            # Move to device
-            verts = verts.to(device)
-            faces = faces.to(device)
-            frames = frames.to(device)
-            mass = mass.to(device)
-            L = L.to(device)
-            evals = evals.to(device)
-            evecs = evecs.to(device)
-            gradX = gradX.to(device)
-            gradY = gradY.to(device)
-            labels = labels.to(device)
-            
+            # Move to opts.device
+            verts = verts.to(opts.device)
+            faces = faces.to(opts.device)
+            frames = frames.to(opts.device)
+            mass = mass.to(opts.device)
+            L = L.to(opts.device)
+            evals = evals.to(opts.device)
+            evecs = evecs.to(opts.device)
+            gradX = gradX.to(opts.device)
+            gradY = gradY.to(opts.device)
+            labels = labels.to(opts.device)
+
             # Construct features
-            if input_features == 'xyz':
+            if opts.input_features == 'xyz':
                 features = verts
-            elif input_features == 'hks':
+            elif opts.input_features == 'hks':
                 features = diffusion_net.geometry.compute_hks_autoscale(evals, evecs, 16)
+            else:
+                raise ValueError(opts.input_features)
 
             # Apply the model
             preds = model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
@@ -202,16 +170,55 @@ def test():
             total_num += 1
 
     test_acc = correct / total_num
-    return test_acc 
+    return test_acc
 
 
-print("Training...")
+def experiment():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input_features", type=str,
+                        help="what features to use as input ('xyz' or 'hks') default: hks", default='hks')
+    parser.add_argument("--dataset_type", type=str,
+                        help="which variant of the dataset to use ('original', or 'simplified') default: original",
+                        default='original')
+    parser.add_argument("--split_size", type=int, help="how large of a training set per-class default: 10",
+                        default=10)
+    parser.add_argument("--n_epoch", type=int, help="number of epochs default: 200",
+                        default=200)
+    args = parser.parse_args()
 
-for epoch in range(n_epoch):
-    train_acc = train_epoch(epoch)
-    test_acc = test()
-    print("Epoch {} - Train overall: {:06.3f}%  Test overall: {:06.3f}%".format(epoch, 100*train_acc, 100*test_acc))
+    opts = Options(
+        device=torch.device('cuda:0'),
+        input_features=args.input_features,
+        k_eig=128,
+        n_epoch=50,
+        lr=1e-3,
+        decay_every=50,
+        decay_rate=0.5,
+        augment_random_rotate=args.input_features == 'xyz',
+        label_smoothing_fac=0.2,
+    )
 
-# Test
-test_acc = test()
-print("Overall test accuracy: {:06.3f}%".format(100*test_acc))
+    train_loader, test_loader = opts.load_datasets(dataset_type=args.dataset_type, split_size=args.split_size)
+    n_class = 30
+    model = opts.build_model(C_out=n_class)
+    model = model.to(opts.device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=opts.lr)
+    model = model.to(opts.device)
+
+    print("Training...")
+    for epoch in range(args.n_epoch):
+        train_acc = train_epoch(epoch=epoch, optimizer=optimizer, model=model, loader=train_loader, opts=opts)
+        test_acc = test(model=model, loader=test_loader, opts=opts)
+        print(f"Epoch {epoch} - Train overall: {100 * train_acc:06.3f}%  Test overall: {100 * test_acc:06.3f}")
+
+    test_acc = test(model=model, loader=test_loader, opts=opts)
+    print(f"Overall test accuracy: {100 * test_acc:06.3f}%")
+
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    model_save_path = str(opts.base_path / f'trained_{args.dataset_type}_{opts.input_features}_{timestamp}.pth')
+    print("Saving last model to " + model_save_path)
+    torch.save(model.state_dict(), model_save_path)
+
+
+if __name__ == '__main__':
+    experiment()

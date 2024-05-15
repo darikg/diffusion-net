@@ -18,6 +18,8 @@ import robust_laplacian
 import potpourri3d as pp3d
 
 import diffusion_net.utils as utils
+from tqdm import tqdm
+
 from .utils import toNP
 
 
@@ -407,8 +409,7 @@ def get_all_operators(verts_list, faces_list, k_eig, op_cache_dir=None, normals=
     # process in random order
     # random.shuffle(inds)
    
-    for num, i in enumerate(inds):
-        print("get_all_operators() processing {} / {} {:.3f}%".format(num, N, num / N * 100))
+    for num, i in tqdm(enumerate(inds)):
         if normals is None:
             outputs = get_operators(verts_list[i], faces_list[i], k_eig, op_cache_dir)
         else:
