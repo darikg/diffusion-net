@@ -524,7 +524,7 @@ def get_operators(verts, faces, k_eig=128, op_cache_dir=None, normals=None, over
                 break
 
             except FileNotFoundError:
-                print("  cache miss -- constructing operators")
+                # print("  cache miss -- constructing operators")
                 break
             
             except Exception as E:

@@ -4,10 +4,12 @@ import os
 import sys
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Any
 
 import torch
+from numpy import array
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
@@ -24,7 +26,9 @@ class Options:
     input_features: str
     data_file: Path
     data_dir: Path
+    mesh_file_mode: str
     log_file: Path
+    model_file: Path
     n_epoch: int
     channel: int
     k_eig: int = 128
@@ -33,6 +37,17 @@ class Options:
     decay_rate = 0.5
     dropout: bool = False
     augment_random_rotate = False
+    norm_verts: bool = False
+    norm_response: bool = False
+    args: Any = None
+
+    @staticmethod
+    def for_timestamp(stamp: str, data_file: Path, **kwargs) -> Options:
+        data_dir = data_file.parent
+
+        log_file = data_dir / f'log_{stamp}.txt'
+        model_file = data_dir / f'model_{stamp}.pth'
+        return Options(**kwargs, log_file=log_file, model_file=model_file, data_dir=data_dir, data_file=data_file)
 
     @staticmethod
     def parse() -> Options:
@@ -63,21 +78,40 @@ class Options:
             action='store_true',
             help='enable dropout',
         )
+        parser.add_argument(
+            '--file-mode',
+            type=str,
+            help='filemode',
+            default='simplified',
+        )
+        parser.add_argument(
+            '--norm-verts',
+            action='store_true',
+            help='center and scale',
+        )
+        parser.add_argument(
+            '--norm-response',
+            action='store_true',
+            help='normalize response to 0-1',
+        )
+        parser.add_argument(
+            '--plot',
+            action='store_true',
+            help='plot last model',
+        )
         args = parser.parse_args()
-        data_file = Path(args.file)
-        data_dir = data_file.parent
-        log_file = data_dir / 'log.txt'
-        if log_file.exists():
-            log_file.unlink()
-
-        return Options(
-            data_file=data_file,
-            data_dir=data_dir,
-            log_file=log_file,
+        stamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+        return Options.for_timestamp(
+            stamp=stamp,
+            data_file=Path(args.file),
             channel=args.channel,
             n_epoch=args.n_epoch,
             input_features=args.input_features,
             dropout=args.dropout,
+            mesh_file_mode=args.file_mode,
+            norm_verts=args.norm_verts,
+            norm_response=args.norm_response,
+            args=args,
         )
 
     def init_log(self):
@@ -95,9 +129,16 @@ class Options:
         console.setFormatter(formatter)
         logging.getLogger('').addHandler(console)
 
-    def load_datasets(self) -> Tuple[GaDataset, GaDataset]:
+    def load_datasets(self, lineage_groups: list[list[int]]) -> Tuple[GaDataset, GaDataset]:
         train_dataset, test_dataset = GaDataset.load_lineages(
-            data_file=self.data_file, k_eig=self.k_eig, channel=self.channel)
+            data_file=self.data_file,
+            k_eig=self.k_eig,
+            channel=self.channel,
+            lineage_groups=lineage_groups,
+            file_mode=self.mesh_file_mode,
+            norm_verts=self.norm_verts,
+            norm_responses=self.norm_response,
+        )
         return train_dataset, test_dataset
 
     def make_model(self) -> DiffusionNet:
@@ -113,7 +154,7 @@ class Options:
 
     def experiment(self) -> Experiment:
         device = torch.device('cuda:0')
-        train_dataset, test_dataset = self.load_datasets()
+        train_dataset, test_dataset = self.load_datasets(lineage_groups=[[1, 2], [0]])
         model = self.make_model()
         model = model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
@@ -125,7 +166,6 @@ class Options:
             train_dataset=train_dataset,
             test_dataset=test_dataset,
         )
-
 
 
 @dataclass
@@ -205,6 +245,18 @@ class Experiment:
 
         return np.mean(losses)
 
+    def predict(self, loader):
+        self.model.eval()
+        obs, preds = [], []
+
+        with torch.no_grad():
+            for data in tqdm(loader):
+                _obs, _preds = self.load_item(data)
+                obs.append(_obs.item())
+                preds.append(_preds.item())
+
+        return array(obs), array(preds)
+
 
 def main():
     logger = logging.getLogger(__name__)
@@ -220,9 +272,8 @@ def main():
         test_loss = exp.test(test_loader)
         logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
 
-    model_save_path = str(opts.data_dir / 'trained.pth')
-    logger.debug("Saving last model to " + model_save_path)
-    torch.save(exp.model.state_dict(), model_save_path)
+    logger.debug("Saving last model to %s", opts.model_file)
+    torch.save(exp.model.state_dict(), opts.model_file)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import cast, Literal
+from typing import cast, Literal, List
 
 import potpourri3d as pp3d
 import torch
@@ -15,12 +15,13 @@ import diffusion_net
 
 
 class GaDataset(Dataset):
-    def __init__(self, df: DataFrame, root_dir, k_eig, op_cache_dir=None):
+    def __init__(self, df: DataFrame, root_dir, k_eig, op_cache_dir=None, normalize=False):
         self.df = df
         self.root_dir = root_dir
         self.k_eig = k_eig
         self.op_cache_dir = op_cache_dir
         self.entries = {}
+        self.normalize = normalize
 
         # center and unit scale
         # verts = diffusion_net.geometry.normalize_positions(verts)
@@ -36,30 +37,49 @@ class GaDataset(Dataset):
         path = self.df.iloc[idx].simplified
         verts, faces = pp3d.read_mesh(str(self.root_dir / path))
         verts = torch.tensor(verts).float()
+
+        if self.normalize:
+            verts = diffusion_net.geometry.normalize_positions(verts)
+
         faces = torch.tensor(faces)
         frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(
             verts, faces, k_eig=self.k_eig, op_cache_dir=self.op_cache_dir)
         return verts, faces, frames, mass, L, evals, evecs, gradX, gradY, response
 
     @staticmethod
-    def load_lineages(data_file: Path, k_eig, channel: int):
+    def load_lineages(
+            data_file: Path,
+            k_eig,
+            channel: int,
+            lineage_groups: List[List[int]],
+            file_mode: str,
+            norm_verts: bool,
+            norm_responses: bool,
+    ):
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes')).reset_index()
-        scenes = scenes[scenes['simplified'] != '']
+        scenes = scenes[scenes[file_mode] != '']
         assert isinstance(channel, int)
         responses = cast(DataFrame, read_hdf(data_file, 'responses')).reset_index()
         responses = responses[responses['channel'] == channel].set_index('scene')
+        if norm_responses:
+            r0, r1 = responses.min(), responses.max()
+            responses = (responses - r0) / (r1 - r0)
+
         scenes = scenes.join(responses, on='scene', how='inner')
         op_cache_dir = data_file.parent / 'op_cache'
 
         print('Pre-calculating operators')
-        for mesh_file in tqdm(scenes.simplified):
+        for mesh_file in tqdm(scenes[file_mode]):
             # print(str(mesh_file))
             verts, faces = pp3d.read_mesh(str(data_file.parent / mesh_file))
             verts = torch.tensor(verts).float()
             faces = torch.tensor(faces)
-            frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(
-                verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
+            if norm_verts:
+                verts = diffusion_net.geometry.normalize_positions(verts)
 
-        for _, df in scenes.groupby('lineage'):
-            yield GaDataset(df=df, root_dir=data_file.parent, k_eig=k_eig, op_cache_dir=op_cache_dir)
+            _ = diffusion_net.geometry.get_operators(verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
+
+        for grp in lineage_groups:
+            i = scenes.lineage.isin(grp)
+            yield GaDataset(df=scenes[i], root_dir=data_file.parent, k_eig=k_eig, op_cache_dir=op_cache_dir, normalize=norm_verts)
 
