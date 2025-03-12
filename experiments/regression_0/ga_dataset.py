@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import cast, Literal, List
+from typing import cast, Literal, List, Tuple
 
 import potpourri3d as pp3d
 import torch
@@ -47,15 +47,14 @@ class GaDataset(Dataset):
         return verts, faces, frames, mass, L, evals, evecs, gradX, gradY, response
 
     @staticmethod
-    def load_lineages(
+    def load_data(
             data_file: Path,
-            k_eig,
             channel: int,
-            lineage_groups: List[List[int]],
             file_mode: str,
-            norm_verts: bool,
             norm_responses: bool,
-    ):
+            norm_verts: bool,
+            k_eig: int,
+    ) -> Tuple[DataFrame, Path]:
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes')).reset_index()
         scenes = scenes[scenes[file_mode] != '']
         assert isinstance(channel, int)
@@ -70,7 +69,6 @@ class GaDataset(Dataset):
 
         print('Pre-calculating operators')
         for mesh_file in tqdm(scenes[file_mode]):
-            # print(str(mesh_file))
             verts, faces = pp3d.read_mesh(str(data_file.parent / mesh_file))
             verts = torch.tensor(verts).float()
             faces = torch.tensor(faces)
@@ -79,7 +77,4 @@ class GaDataset(Dataset):
 
             _ = diffusion_net.geometry.get_operators(verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
 
-        for grp in lineage_groups:
-            i = scenes.lineage.isin(grp)
-            yield GaDataset(df=scenes[i], root_dir=data_file.parent, k_eig=k_eig, op_cache_dir=op_cache_dir, normalize=norm_verts)
-
+        return scenes, op_cache_dir

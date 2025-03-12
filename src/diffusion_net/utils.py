@@ -9,11 +9,13 @@ import scipy
 
 # == Pytorch things
 
+
 def toNP(x):
     """
     Really, definitely convert a torch tensor to a numpy array
     """
     return x.detach().to(torch.device('cpu')).numpy()
+
 
 def label_smoothing_log_loss(pred, labels, smoothing=0.0):
     n_class = pred.shape[-1]
@@ -52,7 +54,9 @@ def sparse_np_to_torch(A):
     values = Acoo.data
     indices = np.vstack((Acoo.row, Acoo.col))
     shape = Acoo.shape
-    return torch.sparse.FloatTensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(shape)).coalesce()
+    # return torch.sparse.FloatTensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(shape)).coalesce()
+    return torch.sparse_coo_tensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(shape)).coalesce()
+
 
 # Pytorch sparse to numpy csc matrix
 def sparse_torch_to_np(A):

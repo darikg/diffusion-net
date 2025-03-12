@@ -10,6 +10,7 @@ from typing import Tuple, Any
 
 import torch
 from numpy import array
+from numpy.random import permutation
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
@@ -42,7 +43,8 @@ class Options:
     args: Any = None
 
     @staticmethod
-    def for_timestamp(stamp: str, data_file: Path, **kwargs) -> Options:
+    def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
+        stamp = stamp or datetime.now().strftime('%Y-%m-%d-%H-%M-%S'),
         data_dir = data_file.parent
 
         log_file = data_dir / f'log_{stamp}.txt'
@@ -100,9 +102,7 @@ class Options:
             help='plot last model',
         )
         args = parser.parse_args()
-        stamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
         return Options.for_timestamp(
-            stamp=stamp,
             data_file=Path(args.file),
             channel=args.channel,
             n_epoch=args.n_epoch,
@@ -129,16 +129,31 @@ class Options:
         console.setFormatter(formatter)
         logging.getLogger('').addHandler(console)
 
-    def load_datasets(self, lineage_groups: list[list[int]]) -> Tuple[GaDataset, GaDataset]:
-        train_dataset, test_dataset = GaDataset.load_lineages(
+    def load_datasets(self, train_frac: float) -> Tuple[GaDataset, GaDataset]:
+        scenes, op_cache_dir = GaDataset.load_data(
             data_file=self.data_file,
             k_eig=self.k_eig,
             channel=self.channel,
-            lineage_groups=lineage_groups,
             file_mode=self.mesh_file_mode,
             norm_verts=self.norm_verts,
             norm_responses=self.norm_response,
         )
+
+        n = len(scenes)
+        idx = permutation(n)
+        split = int(n * train_frac)
+
+        train_dataset, test_dataset = (
+            GaDataset(
+                df=scenes[i],
+                root_dir=self.data_file.parent,
+                k_eig=self.k_eig,
+                op_cache_dir=op_cache_dir,
+                normalize=self.norm_verts
+            )
+            for i in (idx < split, idx >= split)
+        )
+
         return train_dataset, test_dataset
 
     def make_model(self) -> DiffusionNet:
@@ -154,7 +169,7 @@ class Options:
 
     def experiment(self) -> Experiment:
         device = torch.device('cuda:0')
-        train_dataset, test_dataset = self.load_datasets(lineage_groups=[[1, 2], [0]])
+        train_dataset, test_dataset = self.load_datasets(train_frac=0.8)
         model = self.make_model()
         model = model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
@@ -260,7 +275,22 @@ class Experiment:
 
 def main():
     logger = logging.getLogger(__name__)
-    opts = Options.parse()
+    if len(sys.argv) == 1:
+        opts = Options.for_timestamp(
+            # data_file=Path(r"D:\resynth\run00009_resynth\run00009_resynth.hdf"),
+            # channel=31,
+            data_file=Path(r"D:\resynth\run_51_52\run00051_resynth\run00051_resynth.hdf"),
+            channel=0,
+            n_epoch=1000,
+            input_features='hks',
+            dropout=True,
+            mesh_file_mode='simplified',
+            norm_verts=False,
+            norm_response=True,
+        )
+    else:
+        opts = Options.parse()
+
     opts.init_log()
 
     exp = opts.experiment()
