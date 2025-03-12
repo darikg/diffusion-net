@@ -16,10 +16,10 @@ from tqdm import tqdm
 import numpy as np
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
-import diffusion_net
-from diffusion_net.utils import toNP
-from diffusion_net.layers import DiffusionNet
-from ga_dataset import GaDataset
+import diffusion_net  # noqa
+from diffusion_net.utils import toNP   # noqa
+from diffusion_net.layers import DiffusionNet   # noqa
+from ga_dataset import GaDataset   # noqa
 
 
 @dataclass
@@ -234,9 +234,6 @@ class Experiment:
 
         for data in tqdm(loader):
             labels, preds = self.load_item(data)
-
-            # Evaluate loss
-            # loss = diffusion_net.utils.label_smoothing_log_loss(preds, labels, label_smoothing_fac)
             loss = torch.mean(torch.square(preds - labels))
             losses.append(toNP(loss))
             loss.backward()
