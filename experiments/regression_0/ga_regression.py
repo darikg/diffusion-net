@@ -6,7 +6,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple, Any
+from typing import Tuple, Any, Sequence
 
 import torch
 from numpy import array
@@ -31,7 +31,7 @@ class Options:
     log_file: Path
     model_file: Path
     n_epoch: int
-    channel: int
+    channel: int | Sequence[int]
     k_eig: int = 128
     learning_rate: float = 1e-3
     decay_every = 50
@@ -39,8 +39,8 @@ class Options:
     dropout: bool = False
     augment_random_rotate = False
     norm_verts: bool = False
-    norm_response: bool = False
     args: Any = None
+    spike_window: tuple[float, float] = (0.07, 0.3)
 
     @staticmethod
     def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
@@ -101,6 +101,13 @@ class Options:
             action='store_true',
             help='plot last model',
         )
+        parser.add_argument(
+            '--window',
+            nargs=2,
+            type=int,
+            default=(0.07, 0.3),
+            help='spike window in seconds',
+        )
         args = parser.parse_args()
         return Options.for_timestamp(
             data_file=Path(args.file),
@@ -110,7 +117,7 @@ class Options:
             dropout=args.dropout,
             mesh_file_mode=args.file_mode,
             norm_verts=args.norm_verts,
-            norm_response=args.norm_response,
+            spike_window=args.window,
             args=args,
         )
 
@@ -130,13 +137,13 @@ class Options:
         logging.getLogger('').addHandler(console)
 
     def load_datasets(self, train_frac: float) -> Tuple[GaDataset, GaDataset]:
-        scenes, op_cache_dir = GaDataset.load_data(
+        scenes, responses, op_cache_dir = GaDataset.load_data(
             data_file=self.data_file,
             k_eig=self.k_eig,
             channel=self.channel,
             file_mode=self.mesh_file_mode,
             norm_verts=self.norm_verts,
-            norm_responses=self.norm_response,
+            spike_window=self.spike_window,
         )
 
         n = len(scenes)
@@ -146,20 +153,22 @@ class Options:
         train_dataset, test_dataset = (
             GaDataset(
                 df=scenes[i],
+                responses=responses[i],
                 root_dir=self.data_file.parent,
                 k_eig=self.k_eig,
                 op_cache_dir=op_cache_dir,
-                normalize=self.norm_verts
+                normalize=self.norm_verts,
+                file_mode=self.mesh_file_mode,
             )
             for i in (idx < split, idx >= split)
         )
 
         return train_dataset, test_dataset
 
-    def make_model(self) -> DiffusionNet:
+    def make_model(self, n_channels_out: int = 1) -> DiffusionNet:
         return DiffusionNet(
             C_in=3 if self.input_features == 'xyz' else 16,
-            C_out=1,
+            C_out=n_channels_out,
             C_width=64,
             N_block=4,
             last_activation=None,
@@ -170,7 +179,9 @@ class Options:
     def experiment(self) -> Experiment:
         device = torch.device('cuda:0')
         train_dataset, test_dataset = self.load_datasets(train_frac=0.8)
-        model = self.make_model()
+
+        n_channels = 1 if isinstance(self.channel, int) else len(self.channel)
+        model = self.make_model(n_channels_out=n_channels)
         model = model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
         return Experiment(
@@ -276,14 +287,13 @@ def main():
         opts = Options.for_timestamp(
             # data_file=Path(r"D:\resynth\run00009_resynth\run00009_resynth.hdf"),
             # channel=31,
-            data_file=Path(r"D:\resynth\run_51_52\run00051_resynth\run00051_resynth.hdf"),
-            channel=0,
+            data_file=Path(r"D:\surf_frags\run00048_resynth\run00048_resynth.hdf"),
+            channel=26,
             n_epoch=1000,
             input_features='hks',
             dropout=True,
             mesh_file_mode='simplified',
             norm_verts=False,
-            norm_response=True,
         )
     else:
         opts = Options.parse()
