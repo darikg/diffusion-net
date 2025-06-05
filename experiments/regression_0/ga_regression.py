@@ -44,11 +44,11 @@ class Options:
 
     @staticmethod
     def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
-        stamp = stamp or datetime.now().strftime('%Y-%m-%d-%H-%M-%S'),
+        stamp = stamp or datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
         data_dir = data_file.parent
 
-        log_file = data_dir / f'log_{stamp}.txt'
-        model_file = data_dir / f'model_{stamp}.pth'
+        log_file = data_dir / f'diffnet_log_{stamp}.txt'
+        model_file = data_dir / f'diffnet_model_{stamp}.pth'
         return Options(**kwargs, log_file=log_file, model_file=model_file, data_dir=data_dir, data_file=data_file)
 
     @staticmethod
@@ -136,7 +136,7 @@ class Options:
         console.setFormatter(formatter)
         logging.getLogger('').addHandler(console)
 
-    def load_datasets(self, train_frac: float) -> Tuple[GaDataset, GaDataset]:
+    def load_datasets(self, train_frac: float, precalc_ops: bool = True) -> Tuple[GaDataset, GaDataset]:
         scenes, responses, op_cache_dir = GaDataset.load_data(
             data_file=self.data_file,
             k_eig=self.k_eig,
@@ -144,6 +144,7 @@ class Options:
             file_mode=self.mesh_file_mode,
             norm_verts=self.norm_verts,
             spike_window=self.spike_window,
+            precalc_ops=precalc_ops,
         )
 
         n = len(scenes)
@@ -176,9 +177,9 @@ class Options:
             dropout=self.dropout,
         )
 
-    def experiment(self) -> Experiment:
+    def experiment(self, precalc_ops=True) -> Experiment:
         device = torch.device('cuda:0')
-        train_dataset, test_dataset = self.load_datasets(train_frac=0.8)
+        train_dataset, test_dataset = self.load_datasets(train_frac=0.8, precalc_ops=precalc_ops)
 
         n_channels = 1 if isinstance(self.channel, int) else len(self.channel)
         model = self.make_model(n_channels_out=n_channels)
@@ -288,19 +289,20 @@ def main():
             # data_file=Path(r"D:\resynth\run00009_resynth\run00009_resynth.hdf"),
             # channel=31,
             data_file=Path(r"D:\surf_frags\run00048_resynth\run00048_resynth.hdf"),
-            channel=26,
+            channel=[14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18],
             n_epoch=1000,
-            input_features='hks',
+            input_features='xyz',
             dropout=True,
             mesh_file_mode='simplified',
             norm_verts=False,
+            spike_window=(0.07, 0.75),
         )
     else:
         opts = Options.parse()
 
     opts.init_log()
 
-    exp = opts.experiment()
+    exp = opts.experiment(precalc_ops=False)
     train_loader = DataLoader(exp.train_dataset, batch_size=None, shuffle=True)
     test_loader = DataLoader(exp.test_dataset, batch_size=None)
 

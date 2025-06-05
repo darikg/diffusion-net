@@ -27,7 +27,7 @@ class GaDataset(Dataset):
             normalize=False,
     ):
         self.df = df
-        self.responses = responses,
+        self.responses = responses
         self.root_dir = root_dir
         self.k_eig = k_eig
         self.op_cache_dir = op_cache_dir
@@ -46,7 +46,7 @@ class GaDataset(Dataset):
 
     def __getitem__(self, idx):
         response = self.responses[idx]
-        path = self.df.iloc[idx, self.file_mode]
+        path = self.df[self.file_mode].iloc[idx]
         verts, faces = pp3d.read_mesh(str(self.root_dir / path))
         verts = torch.tensor(verts).float()
 
@@ -66,6 +66,7 @@ class GaDataset(Dataset):
             norm_verts: bool,
             k_eig: int,
             spike_window: tuple[float, float],
+            precalc_ops: bool = True,
     ) -> Tuple[DataFrame, np.ndarray, Path]:
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
         scenes = scenes[scenes[file_mode] != '']
@@ -87,21 +88,22 @@ class GaDataset(Dataset):
         responses_ = responses_.loc[(scenes.index, channel)].values  # (n_scenes * n_channels)
         op_cache_dir = data_file.parent / 'op_cache'
 
-        print('Pre-calculating operators')
-        for f in tqdm(scenes[file_mode]):
-            mesh_file = data_file.parent / f
-            if mesh_file.suffix == '.ply':
-                verts, faces = pp3d.read_mesh(str(mesh_file))
-            else:
-                import pyvista as pv
-                mesh = pv.read(mesh_file)
-                verts, faces = mesh.points, mesh.regular_faces
+        if precalc_ops:
+            print('Pre-calculating operators')
+            for f in tqdm(scenes[file_mode]):
+                mesh_file = data_file.parent / f
+                if mesh_file.suffix == '.ply':
+                    verts, faces = pp3d.read_mesh(str(mesh_file))
+                else:
+                    import pyvista as pv
+                    mesh = pv.read(mesh_file)
+                    verts, faces = mesh.points, mesh.regular_faces
 
-            verts = torch.tensor(verts).float()
-            faces = torch.tensor(faces)
-            if norm_verts:
-                verts = diffusion_net.geometry.normalize_positions(verts)
+                verts = torch.tensor(verts).float()
+                faces = torch.tensor(faces)
+                if norm_verts:
+                    verts = diffusion_net.geometry.normalize_positions(verts)
 
-            _ = diffusion_net.geometry.get_operators(verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
+                _ = diffusion_net.geometry.get_operators(verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
 
         return scenes_, responses_, op_cache_dir
