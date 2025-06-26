@@ -5,13 +5,17 @@ import sys
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Tuple, Any, Sequence
 
 import torch
-from numpy import array
+from numpy import array, concatenate
 from numpy.random import permutation
+from pandas import Series
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from tbparse import SummaryReader
 from tqdm import tqdm
 import numpy as np
 
@@ -30,6 +34,7 @@ class Options:
     mesh_file_mode: str
     log_file: Path
     model_file: Path
+    metadata_file: Path
     n_epoch: int
     channel: int | Sequence[int]
     k_eig: int = 128
@@ -47,9 +52,19 @@ class Options:
         stamp = stamp or datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
         data_dir = data_file.parent
 
-        log_file = data_dir / f'diffnet_log_{stamp}.txt'
-        model_file = data_dir / f'diffnet_model_{stamp}.pth'
-        return Options(**kwargs, log_file=log_file, model_file=model_file, data_dir=data_dir, data_file=data_file)
+        log_folder = data_dir / stamp
+        log_folder.mkdir(parents=True, exist_ok=True)
+        log_file = log_folder / f'diffnet_log_{stamp}.txt'
+        model_file = log_folder / f'diffnet_model_{stamp}.pt'
+        metadata_file = log_folder / f'metadata_{stamp}.pt'
+        return Options(
+            **kwargs,
+            log_file=log_file,
+            model_file=model_file,
+            data_dir=data_dir,
+            data_file=data_file,
+            metadata_file=metadata_file,
+        )
 
     @staticmethod
     def parse() -> Options:
@@ -177,14 +192,16 @@ class Options:
             dropout=self.dropout,
         )
 
-    def experiment(self, precalc_ops=True) -> Experiment:
+    def experiment(self, train_dataset: GaDataset, test_dataset: GaDataset) -> Experiment:
         device = torch.device('cuda:0')
-        train_dataset, test_dataset = self.load_datasets(train_frac=0.8, precalc_ops=precalc_ops)
-
         n_channels = 1 if isinstance(self.channel, int) else len(self.channel)
         model = self.make_model(n_channels_out=n_channels)
         model = model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
+
+        folder = self.log_file.parent
+        writer = SummaryWriter(log_dir=str(folder), flush_secs=10) if folder else None
+
         return Experiment(
             opts=self,
             model=model,
@@ -192,6 +209,7 @@ class Options:
             optimizer=optimizer,
             train_dataset=train_dataset,
             test_dataset=test_dataset,
+            writer=writer,
         )
 
 
@@ -203,6 +221,7 @@ class Experiment:
     optimizer: torch.optim.Adam
     train_dataset: GaDataset
     test_dataset: GaDataset
+    writer: SummaryWriter
 
     def load_item(self, data):
         verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels = data
@@ -276,39 +295,52 @@ class Experiment:
         with torch.no_grad():
             for data in tqdm(loader):
                 _obs, _preds = self.load_item(data)
-                obs.append(_obs.item())
-                preds.append(_preds.item())
+                obs.append(_obs.cpu().numpy())
+                preds.append(_preds.cpu().numpy())
 
-        return array(obs), array(preds)
+        return concatenate(obs), concatenate(preds)
 
 
 def main():
     logger = logging.getLogger(__name__)
-    if len(sys.argv) == 1:
-        opts = Options.for_timestamp(
-            # data_file=Path(r"D:\resynth\run00009_resynth\run00009_resynth.hdf"),
-            # channel=31,
-            data_file=Path(r"D:\surf_frags\run00048_resynth\run00048_resynth.hdf"),
-            channel=[14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18],
-            n_epoch=1000,
-            input_features='xyz',
-            dropout=True,
-            mesh_file_mode='simplified',
-            norm_verts=False,
-            spike_window=(0.07, 0.75),
-        )
-    else:
-        opts = Options.parse()
-
+    opts = Options.for_timestamp(
+        # data_file=Path(r"D:\resynth\run_51_52\1k_faces\run00051_resynth.hdf"),
+        # channel=(0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),
+        # data_file=Path(r"D:\resynth\run_48_49\1k_faces\run00048_resynth.hdf"),
+        # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
+        # data_file=Path(r"D:\resynth\run_09_10\1k_faces\run00009_resynth.hdf"),
+        # channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
+        data_file=Path(r"D:\resynth\run_42_43\1k_faces\run00042_resynth.hdf"),
+        channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
+        n_epoch=250,
+        input_features='hks',
+        dropout=True,
+        mesh_file_mode='simplified',
+        norm_verts=False,
+        spike_window=(0.07, 0.75),
+    )
     opts.init_log()
 
-    exp = opts.experiment(precalc_ops=False)
+    train_frac = 0.95
+    train_dataset, test_dataset = opts.load_datasets(train_frac=train_frac, precalc_ops=False)
+    exp = opts.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+
+    metadata = dict(
+        opts=opts,
+        train_frac=train_frac,
+        train_scenes=exp.train_dataset.df.scene.values,
+        test_scenes=exp.test_dataset.df.scene.values,
+    )
+    torch.save(metadata, opts.metadata_file)
+
     train_loader = DataLoader(exp.train_dataset, batch_size=None, shuffle=True)
     test_loader = DataLoader(exp.test_dataset, batch_size=None)
 
     for epoch in range(opts.n_epoch):
         train_loss = exp.train_epoch(train_loader, epoch)
+        exp.writer.add_scalar(f'loss/train', train_loss, epoch)
         test_loss = exp.test(test_loader)
+        exp.writer.add_scalar(f'loss/test', test_loss, epoch)
         logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
 
     logger.debug("Saving last model to %s", opts.model_file)
@@ -317,3 +349,36 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+class Reader:
+    def __init__(self, folder: Path):
+        self.folder = folder
+        self.reader = SummaryReader(str(folder))
+
+    @property
+    def log_path(self) -> Path:
+        return Path(self.reader.log_path)
+
+    @cached_property
+    def hparams(self) -> Series:
+        hparams = self.reader.hparams.set_index('tag').unstack().reset_index(level=0, drop=True)
+        hparams['logfile'] = self.log_path.name
+        return hparams
+
+    @cached_property
+    def scalars(self):
+        return self.reader.scalars
+
+    @lru_cache
+    def scalar(self, tag):
+        df = self.scalars
+        df = df[df.tag == tag]
+        return df.step, df.value
+
+    def format_hparams(self, tags=None):
+        df = self.reader.hparams.set_index('tag')
+        if not tags:
+            tags = [k for k, v in df.items() if len(set(v)) > 1 and k != 'logfile']
+
+        return ', '.join(f'{k} = {df.loc[k].value}' for k in tags)

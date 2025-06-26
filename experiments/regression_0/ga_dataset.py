@@ -47,7 +47,15 @@ class GaDataset(Dataset):
     def __getitem__(self, idx):
         response = self.responses[idx]
         path = self.df[self.file_mode].iloc[idx]
-        verts, faces = pp3d.read_mesh(str(self.root_dir / path))
+        mesh_file = self.root_dir / path
+
+        if mesh_file.suffix == '.vtp':
+            import pyvista as pv
+            mesh = pv.read(mesh_file)
+            verts, faces = mesh.points, mesh.regular_faces
+        else:
+            verts, faces = pp3d.read_mesh(str(mesh_file))
+
         verts = torch.tensor(verts).float()
 
         if self.normalize:
