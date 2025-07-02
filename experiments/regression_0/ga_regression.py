@@ -1,23 +1,24 @@
 from __future__ import annotations
+
+import argparse
 import logging
 import os
 import sys
-import argparse
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Tuple, Any, Sequence
 
+import numpy as np
 import torch
-from numpy import array, concatenate
+from numpy import concatenate
 from numpy.random import permutation
 from pandas import Series
+from tbparse import SummaryReader
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from tbparse import SummaryReader
 from tqdm import tqdm
-import numpy as np
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net  # noqa
@@ -46,6 +47,8 @@ class Options:
     norm_verts: bool = False
     args: Any = None
     spike_window: tuple[float, float] = (0.07, 0.3)
+    train_frac: float = 0.95
+    weight_error: bool = True
 
     @staticmethod
     def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
@@ -151,7 +154,11 @@ class Options:
         console.setFormatter(formatter)
         logging.getLogger('').addHandler(console)
 
-    def load_datasets(self, train_frac: float, precalc_ops: bool = True) -> Tuple[GaDataset, GaDataset]:
+    def load_datasets(
+            self,
+            precalc_ops: bool = True,
+            train_test_scenes: tuple[Sequence[int], Sequence] | None = None,
+    ) -> Tuple[GaDataset, GaDataset]:
         scenes, responses, op_cache_dir = GaDataset.load_data(
             data_file=self.data_file,
             k_eig=self.k_eig,
@@ -162,21 +169,28 @@ class Options:
             precalc_ops=precalc_ops,
         )
 
-        n = len(scenes)
-        idx = permutation(n)
-        split = int(n * train_frac)
+        if train_test_scenes:
+            train_scenes, test_scenes = train_test_scenes
+            train_idxs = np.isin(scenes.scene, train_scenes)
+            test_idxs = np.isin(scenes.scene, test_scenes)
+        else:
+            n = len(scenes)
+            idx = permutation(n)
+            split = int(n * self.train_frac)
+            train_idxs = idx < split
+            test_idxs = idx >= split
 
         train_dataset, test_dataset = (
             GaDataset(
-                df=scenes[i],
-                responses=responses[i],
+                df=scenes[idx],
+                responses=responses[idx],
                 root_dir=self.data_file.parent,
                 k_eig=self.k_eig,
                 op_cache_dir=op_cache_dir,
                 normalize=self.norm_verts,
                 file_mode=self.mesh_file_mode,
             )
-            for i in (idx < split, idx >= split)
+            for idx in (train_idxs, test_idxs)
         )
 
         return train_dataset, test_dataset
@@ -258,14 +272,17 @@ class Experiment:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = self.opts.learning_rate
 
-        # Set model to 'train' mode
         self.model.train()
         self.optimizer.zero_grad()
         losses = []
 
         for data in tqdm(loader):
             labels, preds = self.load_item(data)
-            loss = torch.mean(torch.square(preds - labels))
+            err = torch.square(preds - labels)
+            if self.opts.weight_error:
+                err = err * labels
+
+            loss = torch.mean(err)
             losses.append(toNP(loss))
             loss.backward()
 
@@ -318,16 +335,15 @@ def main():
         mesh_file_mode='simplified',
         norm_verts=False,
         spike_window=(0.07, 0.75),
+        train_frac=0.95,
+        weight_error=False,
     )
     opts.init_log()
-
-    train_frac = 0.95
-    train_dataset, test_dataset = opts.load_datasets(train_frac=train_frac, precalc_ops=False)
+    train_dataset, test_dataset = opts.load_datasets(precalc_ops=False)
     exp = opts.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
 
     metadata = dict(
         opts=opts,
-        train_frac=train_frac,
         train_scenes=exp.train_dataset.df.scene.values,
         test_scenes=exp.test_dataset.df.scene.values,
     )

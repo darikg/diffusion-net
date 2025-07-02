@@ -55,3 +55,4 @@ pyrightconfig.json
 *.app
 /experiments/regression_0/data/*
 /.idea/*
+**/*-checkpoint.ipynb
