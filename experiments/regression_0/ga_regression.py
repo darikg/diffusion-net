@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property, lru_cache
 from pathlib import Path
-from typing import Tuple, Any, Sequence
+from typing import Tuple, Any, Sequence, Callable, Literal
 
 import numpy as np
 import torch
+import pandas as pd
 from numpy import concatenate
 from numpy.random import permutation
 from pandas import Series
@@ -48,7 +49,7 @@ class Options:
     args: Any = None
     spike_window: tuple[float, float] = (0.07, 0.3)
     train_frac: float = 0.95
-    weight_error: bool = True
+    weight_error: None | Literal['response', 'binned'] = 'binned'
 
     @staticmethod
     def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
@@ -159,7 +160,7 @@ class Options:
             precalc_ops: bool = True,
             train_test_scenes: tuple[Sequence[int], Sequence] | None = None,
     ) -> Tuple[GaDataset, GaDataset]:
-        scenes, responses, op_cache_dir = GaDataset.load_data(
+        scenes, responses, op_cache_dir, weights, fit_fns = GaDataset.load_data(
             data_file=self.data_file,
             k_eig=self.k_eig,
             channel=self.channel,
@@ -167,6 +168,7 @@ class Options:
             norm_verts=self.norm_verts,
             spike_window=self.spike_window,
             precalc_ops=precalc_ops,
+            weight_error=self.weight_error,
         )
 
         if train_test_scenes:
@@ -189,6 +191,7 @@ class Options:
                 op_cache_dir=op_cache_dir,
                 normalize=self.norm_verts,
                 file_mode=self.mesh_file_mode,
+                weights=weights.values[idx] if weights is not None else None,
             )
             for idx in (train_idxs, test_idxs)
         )
@@ -238,7 +241,7 @@ class Experiment:
     writer: SummaryWriter
 
     def load_item(self, data):
-        verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels = data
+        verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels, weights = data
         verts = verts.to(self.device)
         faces = faces.to(self.device)
         _frames = frames.to(self.device)
@@ -248,6 +251,10 @@ class Experiment:
         evecs = evecs.to(self.device)
         gradX = gradX.to(self.device)
         gradY = gradY.to(self.device)
+
+        if not isinstance(labels, torch.Tensor):
+            labels = torch.Tensor(labels)
+
         labels = labels.to(self.device)
 
         # if augment_random_rotate:
@@ -263,7 +270,7 @@ class Experiment:
 
         # Apply the model
         preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
-        return labels, preds
+        return labels, preds, weights
 
     def train_epoch(self, loader: DataLoader, epoch: int) -> float:
         # Returns mean training loss
@@ -277,10 +284,10 @@ class Experiment:
         losses = []
 
         for data in tqdm(loader):
-            labels, preds = self.load_item(data)
+            labels, preds, weights = self.load_item(data)
             err = torch.square(preds - labels)
-            if self.opts.weight_error:
-                err = err * labels
+            if weights is not None:
+                err = err * weights
 
             loss = torch.mean(err)
             losses.append(toNP(loss))
@@ -293,29 +300,32 @@ class Experiment:
         return np.mean(losses)
 
     def test(self, loader):
-        # Returns mean loss
         self.model.eval()
         losses = []
 
         with torch.no_grad():
             for data in tqdm(loader):
-                labels, preds = self.load_item(data)
-                loss = torch.mean(torch.square(preds - labels))
+                labels, preds, weights = self.load_item(data)
+                err = torch.square(preds - labels)
+                if weights is not None:
+                    err = err * weights
+
+                loss = torch.mean(err)
                 losses.append(toNP(loss))
 
         return np.mean(losses)
 
-    def predict(self, loader):
+    def predict(self, loader, agg_fn=np.concatenate):
         self.model.eval()
         obs, preds = [], []
 
         with torch.no_grad():
             for data in tqdm(loader):
-                _obs, _preds = self.load_item(data)
+                _obs, _preds, _weights = self.load_item(data)
                 obs.append(_obs.cpu().numpy())
                 preds.append(_preds.cpu().numpy())
 
-        return concatenate(obs), concatenate(preds)
+        return agg_fn(obs), agg_fn(preds)
 
 
 def main():
@@ -325,18 +335,25 @@ def main():
         # channel=(0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),
         # data_file=Path(r"D:\resynth\run_48_49\1k_faces\run00048_resynth.hdf"),
         # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
+        # data_file=Path(r"D:\resynth\run_42_43\1k_faces\run00042_resynth.hdf"),
+        # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
+        # data_file=Path(r"D:\resynth\run_38_39\1k_faces\run00038_resynth.hdf"),
+        # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),
+        # data_file=Path(r"D:\resynth\run_20_21\1k_faces\run00020_resynth.hdf"),
+        # channel=(2, 17, 13, 29, 14, 7, 23), # , 3, 28, 8, 12, 18, 31, 27, 4),
         # data_file=Path(r"D:\resynth\run_09_10\1k_faces\run00009_resynth.hdf"),
         # channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
-        data_file=Path(r"D:\resynth\run_42_43\1k_faces\run00042_resynth.hdf"),
+
+        data_file=Path(r"D:\resynth\run_48_49\resynth_everything\run00048_resynth.hdf"),
         channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
-        n_epoch=250,
+        n_epoch=200,
         input_features='hks',
         dropout=True,
         mesh_file_mode='simplified',
         norm_verts=False,
         spike_window=(0.07, 0.75),
         train_frac=0.95,
-        weight_error=False,
+        weight_error='response',
     )
     opts.init_log()
     train_dataset, test_dataset = opts.load_datasets(precalc_ops=False)
@@ -398,3 +415,7 @@ class Reader:
             tags = [k for k, v in df.items() if len(set(v)) > 1 and k != 'logfile']
 
         return ', '.join(f'{k} = {df.loc[k].value}' for k in tags)
+
+    def metadata(self):
+        metafile = self.folder / f"metadata_{self.folder.parts[-1]}.pt"
+        return torch.load(metafile)

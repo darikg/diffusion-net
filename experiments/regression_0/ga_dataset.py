@@ -1,18 +1,64 @@
 import os
 import sys
 from pathlib import Path
-from typing import cast, Tuple, Sequence
+from typing import cast, Tuple, Sequence, Literal, Callable
 
 import numpy as np
 import potpourri3d as pp3d
 import torch
-from pandas import DataFrame
+import pandas as pd
+from pandas import DataFrame, Series
 from pandas import read_hdf
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net  # noqa
+
+
+def calc_binned_weights(r: pd.Series, n_bins=10, plot=False):
+    import scipy.optimize
+    bins = pd.qcut(r, n_bins, duplicates='drop')
+    binned = r.groupby(bins, observed=True).aggregate(n='count', avg='mean')
+    binned['frac'] = binned.n / len(r)
+    binned['weight'] = 1 / binned.frac * binned.avg
+
+    b0, b1 = binned.avg.min(), binned.avg.max()
+    weight0 = pd.Series(binned.weight[bins].values, index=bins.index)  # (n_stim,) Constant in each bin
+    weight1 = weight0 * (b0 + (b1 - b0) * r)  # Linear in each bin
+
+    def exp_fn(t, a_, b_):
+        return a_ * np.exp(b_ * t)
+
+    (a, b), _ = scipy.optimize.curve_fit(exp_fn, r, weight1)  # noqa
+    weight2 = exp_fn(r, a, b)
+
+    if plot:
+        from matplotlib import pyplot as plt
+        plt.plot(r, r, 'k.', r, weight0, 'b.', r, weight1, 'g.', r, weight2, 'c.')
+
+    weight_fn = lambda t: exp_fn(t, a, b)  # noqa
+    return weight2, weight_fn
+
+
+def fit_channel_weights(responses: pd.DataFrame) -> tuple[pd.DataFrame, list[Callable[[Series], Series]]]:
+    ch_weights, ch_fits = [], []
+
+    for ch, r in responses.items():
+        w, fit_fn = calc_binned_weights(responses.loc[:, ch])
+        ch_weights.append(w.rename(ch))
+        ch_fits.append(fit_fn)
+
+    weights = pd.concat(ch_weights, axis=1)
+    return weights, ch_fits
+
+
+def apply_fit_fns(responses: pd.DataFrame, fit_fns: list[Callable[[Series], Series]]):
+    ch_weights = [
+        fit_fn(r).rename(ch)
+        for (ch, r), fit_fn in zip(responses.items(), fit_fns)
+    ]
+    return pd.concat(ch_weights, axis=1)
 
 
 class GaDataset(Dataset):
@@ -25,9 +71,11 @@ class GaDataset(Dataset):
             file_mode: str,
             op_cache_dir=None,
             normalize=False,
+            weights: np.ndarray | None = None,
     ):
         self.df = df
         self.responses = responses
+        self.weights = weights
         self.root_dir = root_dir
         self.k_eig = k_eig
         self.op_cache_dir = op_cache_dir
@@ -46,6 +94,7 @@ class GaDataset(Dataset):
 
     def __getitem__(self, idx):
         response = self.responses[idx]
+        weight = self.weights[idx] if self.weights is not None else None
         path = self.df[self.file_mode].iloc[idx]
         mesh_file = self.root_dir / path
 
@@ -64,7 +113,7 @@ class GaDataset(Dataset):
         faces = torch.tensor(faces)
         frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(
             verts, faces, k_eig=self.k_eig, op_cache_dir=self.op_cache_dir)
-        return verts, faces, frames, mass, L, evals, evecs, gradX, gradY, response
+        return verts, faces, frames, mass, L, evals, evecs, gradX, gradY, response, weight
 
     @staticmethod
     def load_data(
@@ -75,7 +124,8 @@ class GaDataset(Dataset):
             k_eig: int,
             spike_window: tuple[float, float],
             precalc_ops: bool = True,
-    ) -> Tuple[DataFrame, np.ndarray, Path]:
+            weight_error: None | Literal['response', 'binned'] = None,
+    ) -> Tuple[DataFrame, np.ndarray, Path, pd.DataFrame | None, list[Callable[[Series], Series]] | None]:
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
         scenes = scenes[scenes[file_mode] != '']
 
@@ -93,7 +143,19 @@ class GaDataset(Dataset):
         r0, r1 = responses.min(axis=0), responses.max(axis=0)
         responses_ = ((responses - r0) / (r1 - r0)).replace((-np.inf, np.inf, np.nan), 0)
         scenes_ = scenes[scenes.index.isin(responses_.index)].reset_index()
-        responses_ = responses_.loc[(scenes.index, channel)].values  # (n_scenes * n_channels)
+        responses_ = responses_.loc[(scenes.index, channel)]  # .values  # (n_scenes * n_channels)
+
+        if weight_error:
+            if weight_error == 'binned':
+                weights, fit_fns = fit_channel_weights(responses_)
+            elif weight_error == 'response':
+                weights = responses_
+                fit_fns = None
+            else:
+                raise ValueError(weight_error)
+        else:
+            weights = fit_fns = None
+
         op_cache_dir = data_file.parent / 'op_cache'
 
         if precalc_ops:
@@ -114,4 +176,4 @@ class GaDataset(Dataset):
 
                 _ = diffusion_net.geometry.get_operators(verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
 
-        return scenes_, responses_, op_cache_dir
+        return scenes_, responses_.values, op_cache_dir, weights, fit_fns
