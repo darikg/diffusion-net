@@ -125,9 +125,17 @@ class GaDataset(Dataset):
             spike_window: tuple[float, float],
             precalc_ops: bool = True,
             weight_error: None | Literal['response', 'binned'] = None,
-    ) -> Tuple[DataFrame, np.ndarray, Path, pd.DataFrame | None, list[Callable[[Series], Series]] | None]:
+            n_faces: int | None = None,
+    ) -> Tuple[DataFrame, np.ndarray, Path, np.ndarray, list[Callable[[Series], Series]] | None]:
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
         scenes = scenes[scenes[file_mode] != '']
+
+        if n_faces is not None:
+            def _map_file(f: str):
+                f = Path(f)
+                return str(f.with_suffix(f'.{n_faces}_faces' + f.suffix))
+
+            scenes[file_mode] = scenes[file_mode].apply(_map_file)
 
         t0, t1 = spike_window
         spikes = cast(DataFrame, read_hdf(data_file, 'spikes'))
@@ -148,8 +156,9 @@ class GaDataset(Dataset):
         if weight_error:
             if weight_error == 'binned':
                 weights, fit_fns = fit_channel_weights(responses_)
+                weights = weights.values
             elif weight_error == 'response':
-                weights = responses_
+                weights = responses_.values
                 fit_fns = None
             else:
                 raise ValueError(weight_error)
@@ -160,8 +169,8 @@ class GaDataset(Dataset):
 
         if precalc_ops:
             print('Pre-calculating operators')
-            for f in tqdm(scenes[file_mode]):
-                mesh_file = data_file.parent / f
+            for file in tqdm(scenes[file_mode]):
+                mesh_file = data_file.parent / file
                 if mesh_file.suffix == '.ply':
                     verts, faces = pp3d.read_mesh(str(mesh_file))
                 else:

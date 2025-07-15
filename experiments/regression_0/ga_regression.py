@@ -7,13 +7,12 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property, lru_cache
+from itertools import product
 from pathlib import Path
-from typing import Tuple, Any, Sequence, Callable, Literal
+from typing import Tuple, Any, Sequence, Literal, Iterator
 
 import numpy as np
 import torch
-import pandas as pd
-from numpy import concatenate
 from numpy.random import permutation
 from pandas import Series
 from tbparse import SummaryReader
@@ -28,147 +27,44 @@ from diffusion_net.layers import DiffusionNet   # noqa
 from ga_dataset import GaDataset   # noqa
 
 
+def hparam_combinations(hparams: dict[str, Sequence[Any]]) -> Iterator[dict[str, Any]]:
+    for vals in product(*hparams.values()):
+        yield {k: v for k, v in zip(hparams.keys(), vals)}
+
+
 @dataclass
-class Options:
-    input_features: str
-    data_file: Path
-    data_dir: Path
-    mesh_file_mode: str
-    log_file: Path
+class Metadata:
+    opts: Options
+    log_folder: Path
     model_file: Path
     metadata_file: Path
-    n_epoch: int
+
+    input_features: str
     channel: int | Sequence[int]
     k_eig: int = 128
     learning_rate: float = 1e-3
-    decay_every = 50
-    decay_rate = 0.5
+    decay_every: int = 50
+    decay_rate: float = 0.5
     dropout: bool = False
-    augment_random_rotate = False
-    norm_verts: bool = False
-    args: Any = None
+    n_faces: int | None = None
     spike_window: tuple[float, float] = (0.07, 0.3)
-    train_frac: float = 0.95
     weight_error: None | Literal['response', 'binned'] = 'binned'
-
-    @staticmethod
-    def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
-        stamp = stamp or datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        data_dir = data_file.parent
-
-        log_folder = data_dir / stamp
-        log_folder.mkdir(parents=True, exist_ok=True)
-        log_file = log_folder / f'diffnet_log_{stamp}.txt'
-        model_file = log_folder / f'diffnet_model_{stamp}.pt'
-        metadata_file = log_folder / f'metadata_{stamp}.pt'
-        return Options(
-            **kwargs,
-            log_file=log_file,
-            model_file=model_file,
-            data_dir=data_dir,
-            data_file=data_file,
-            metadata_file=metadata_file,
-        )
-
-    @staticmethod
-    def parse() -> Options:
-        parser = argparse.ArgumentParser()
-        parser.add_argument(
-            "--input_features",
-            type=str,
-            help="what features to use as input ('xyz' or 'hks') default: hks",
-            default='hks',
-        )
-        parser.add_argument(
-            '--file',
-            type=str,
-            help='the hdf file to load data from',
-        )
-        parser.add_argument(
-            '--channel',
-            type=int,
-            help='which channel to use',
-        )
-        parser.add_argument(
-            '--n-epoch',
-            type=int,
-            help='number of epochs',
-        )
-        parser.add_argument(
-            '--dropout',
-            action='store_true',
-            help='enable dropout',
-        )
-        parser.add_argument(
-            '--file-mode',
-            type=str,
-            help='filemode',
-            default='simplified',
-        )
-        parser.add_argument(
-            '--norm-verts',
-            action='store_true',
-            help='center and scale',
-        )
-        parser.add_argument(
-            '--norm-response',
-            action='store_true',
-            help='normalize response to 0-1',
-        )
-        parser.add_argument(
-            '--plot',
-            action='store_true',
-            help='plot last model',
-        )
-        parser.add_argument(
-            '--window',
-            nargs=2,
-            type=int,
-            default=(0.07, 0.3),
-            help='spike window in seconds',
-        )
-        args = parser.parse_args()
-        return Options.for_timestamp(
-            data_file=Path(args.file),
-            channel=args.channel,
-            n_epoch=args.n_epoch,
-            input_features=args.input_features,
-            dropout=args.dropout,
-            mesh_file_mode=args.file_mode,
-            norm_verts=args.norm_verts,
-            spike_window=args.window,
-            args=args,
-        )
-
-    def init_log(self):
-        logging.basicConfig(
-            filename=self.log_file,
-            level=logging.DEBUG,
-            format='[%(asctime)s] {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s',
-            datefmt='%H:%M:%S'
-        )
-
-        # set up logging to console
-        console = logging.StreamHandler()
-        console.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
-        console.setFormatter(formatter)
-        logging.getLogger('').addHandler(console)
 
     def load_datasets(
             self,
             precalc_ops: bool = True,
-            train_test_scenes: tuple[Sequence[int], Sequence] | None = None,
+            train_test_scenes: tuple[Sequence[int], Sequence[int]] | None = None,
     ) -> Tuple[GaDataset, GaDataset]:
         scenes, responses, op_cache_dir, weights, fit_fns = GaDataset.load_data(
-            data_file=self.data_file,
+            data_file=self.opts.data_file,
             k_eig=self.k_eig,
             channel=self.channel,
-            file_mode=self.mesh_file_mode,
-            norm_verts=self.norm_verts,
+            file_mode=self.opts.mesh_file_mode,
+            norm_verts=False,
             spike_window=self.spike_window,
             precalc_ops=precalc_ops,
             weight_error=self.weight_error,
+            n_faces=self.n_faces,
         )
 
         if train_test_scenes:
@@ -178,7 +74,7 @@ class Options:
         else:
             n = len(scenes)
             idx = permutation(n)
-            split = int(n * self.train_frac)
+            split = int(n * self.opts.train_frac)
             train_idxs = idx < split
             test_idxs = idx >= split
 
@@ -186,12 +82,12 @@ class Options:
             GaDataset(
                 df=scenes[idx],
                 responses=responses[idx],
-                root_dir=self.data_file.parent,
+                root_dir=self.opts.data_file.parent,
                 k_eig=self.k_eig,
                 op_cache_dir=op_cache_dir,
-                normalize=self.norm_verts,
-                file_mode=self.mesh_file_mode,
-                weights=weights.values[idx] if weights is not None else None,
+                normalize=False,
+                file_mode=self.opts.mesh_file_mode,
+                weights=weights[idx] if weights is not None else None,
             )
             for idx in (train_idxs, test_idxs)
         )
@@ -215,12 +111,10 @@ class Options:
         model = self.make_model(n_channels_out=n_channels)
         model = model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
-
-        folder = self.log_file.parent
-        writer = SummaryWriter(log_dir=str(folder), flush_secs=10) if folder else None
+        writer = SummaryWriter(log_dir=str(self.log_folder), flush_secs=10)
 
         return Experiment(
-            opts=self,
+            metadata=self,
             model=model,
             device=device,
             optimizer=optimizer,
@@ -231,8 +125,78 @@ class Options:
 
 
 @dataclass
+class Options:
+    mesh_file_mode: str
+    data_file: Path
+    data_dir: Path
+    log_folder: Path
+    log_file: Path
+
+    input_features: tuple[str]
+    channel: tuple[int | Sequence[int]]
+    k_eig: tuple[int]
+    learning_rate: tuple[float]
+    decay_every: tuple[int]
+    decay_rate: tuple[float]
+    dropout: tuple[bool]
+    spike_window: tuple[tuple[float, float]]
+    weight_error: tuple[None | Literal['response', 'binned']]
+    n_faces: tuple[None | int]
+
+    train_frac: float = 0.95
+    n_epoch: int = 1
+
+    @staticmethod
+    def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
+        stamp = stamp or datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+        data_dir = data_file.parent
+        log_folder = data_dir / stamp
+        log_folder.mkdir(parents=True, exist_ok=True)
+
+        return Options(
+            data_dir=data_dir,
+            data_file=data_file,
+            log_folder=log_folder,
+            log_file=log_folder / f'diffnet_log_{stamp}.txt',
+            **kwargs
+        )
+
+    def metadata(self, **kwargs) -> Metadata:
+        stamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+        log_folder = self.log_folder / stamp
+        log_folder.mkdir(parents=True, exist_ok=True)
+        return Metadata(
+            opts=self,
+            log_folder=log_folder,
+            model_file=log_folder / f'diffnet_model_{stamp}.pt',
+            metadata_file=log_folder / f'metadata_{stamp}.pt',
+            **kwargs,
+        )
+
+    def iter_metadata(self) -> Iterator[Metadata]:
+        hparams = {k: v for k, v in self.__dict__.items() if isinstance(v, tuple)}
+        for hp in hparam_combinations(hparams):
+            yield self.metadata(**hp)
+
+    def init_log(self):
+        logging.basicConfig(
+            filename=self.log_file,
+            level=logging.DEBUG,
+            format='[%(asctime)s] {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+
+        # set up logging to console
+        console = logging.StreamHandler()
+        console.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+        console.setFormatter(formatter)
+        logging.getLogger('').addHandler(console)
+
+
+@dataclass
 class Experiment:
-    opts: Options
+    metadata: Metadata
     model: DiffusionNet
     device: torch.device
     optimizer: torch.optim.Adam
@@ -252,6 +216,11 @@ class Experiment:
         gradX = gradX.to(self.device)
         gradY = gradY.to(self.device)
 
+        if weights is not None:
+            if not isinstance(weights, torch.Tensor):
+                weights = torch.Tensor(np.asarray(weights))
+            weights = weights.to(self.device)
+
         if not isinstance(labels, torch.Tensor):
             labels = torch.Tensor(labels)
 
@@ -261,12 +230,12 @@ class Experiment:
         #     verts = diffusion_net.utils.random_rotate_points(verts)
 
         # Construct features
-        if self.opts.input_features == 'xyz':
+        if self.metadata.input_features == 'xyz':
             features = verts
-        elif self.opts.input_features == 'hks':
+        elif self.metadata.input_features == 'hks':
             features = diffusion_net.geometry.compute_hks_autoscale(evals, evecs, 16)
         else:
-            raise NotImplementedError(self.opts.input_features)
+            raise NotImplementedError(self.metadata.input_features)
 
         # Apply the model
         preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
@@ -274,10 +243,10 @@ class Experiment:
 
     def train_epoch(self, loader: DataLoader, epoch: int) -> float:
         # Returns mean training loss
-        if epoch > 0 and epoch % self.opts.decay_every == 0:
-            self.opts.learning_rate *= self.opts.decay_rate
+        if epoch > 0 and epoch % self.metadata.decay_every == 0:
+            self.metadata.learning_rate *= self.metadata.decay_rate
             for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.opts.learning_rate
+                param_group['lr'] = self.metadata.learning_rate
 
         self.model.train()
         self.optimizer.zero_grad()
@@ -344,40 +313,64 @@ def main():
         # data_file=Path(r"D:\resynth\run_09_10\1k_faces\run00009_resynth.hdf"),
         # channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
 
-        data_file=Path(r"D:\resynth\run_48_49\resynth_everything\run00048_resynth.hdf"),
-        channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
-        n_epoch=200,
-        input_features='hks',
-        dropout=True,
+        # data_file=Path(r"D:\resynth\run_48_49\resynth_everything3\run00048_resynth.hdf"),
+        data_file=Path(r"D:\resynth\run_48_49\many_faces\run00048_resynth.hdf"),
+        n_epoch=250,
         mesh_file_mode='simplified',
-        norm_verts=False,
-        spike_window=(0.07, 0.75),
         train_frac=0.95,
-        weight_error='response',
+
+        channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
+        input_features=('hks',),
+        spike_window=((0.07, 0.75),),
+        weight_error=('response',),
+        k_eig=(128,),
+        learning_rate=(1e-3,),
+        decay_every=(50,),
+        decay_rate=(0.5,),
+        dropout=(True,),
+        n_faces=(1500, 1250, 1000, 750, 500),
     )
     opts.init_log()
-    train_dataset, test_dataset = opts.load_datasets(precalc_ops=False)
-    exp = opts.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+    train_test_scenes = None
+    metas = []
+
+    for meta in opts.iter_metadata():
+        metas.append(meta)
+
+        train_dataset, test_dataset = meta.load_datasets(precalc_ops=False, train_test_scenes=train_test_scenes)
+        train_test_scenes = train_dataset.df.scene.values, test_dataset.df.scene.values
+        exp = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+
+        train_loader = DataLoader(exp.train_dataset, batch_size=None, shuffle=True)
+        test_loader = DataLoader(exp.test_dataset, batch_size=None)
+
+        best_loss = np.inf
+
+        for epoch in range(opts.n_epoch):
+            train_loss = exp.train_epoch(train_loader, epoch)
+            exp.writer.add_scalar(f'loss/train', train_loss, epoch)
+            test_loss = exp.test(test_loader)
+            exp.writer.add_scalar(f'loss/test', test_loss, epoch)
+            logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
+
+            if test_loss < best_loss:
+                best_loss = test_loss
+                logger.debug('Saving best test loss to %s', meta.model_file)
+                torch.save(exp.model.state_dict(), meta.model_file)
+
+        mf = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
+        logger.debug("Saving last model to %s", mf)
+        torch.save(exp.model.state_dict(), meta.model_file)
 
     metadata = dict(
         opts=opts,
-        train_scenes=exp.train_dataset.df.scene.values,
-        test_scenes=exp.test_dataset.df.scene.values,
+        metadata=metas,
+        train_scenes=train_test_scenes[0],
+        test_scenes=train_test_scenes[1],
     )
-    torch.save(metadata, opts.metadata_file)
-
-    train_loader = DataLoader(exp.train_dataset, batch_size=None, shuffle=True)
-    test_loader = DataLoader(exp.test_dataset, batch_size=None)
-
-    for epoch in range(opts.n_epoch):
-        train_loss = exp.train_epoch(train_loader, epoch)
-        exp.writer.add_scalar(f'loss/train', train_loss, epoch)
-        test_loss = exp.test(test_loader)
-        exp.writer.add_scalar(f'loss/test', test_loss, epoch)
-        logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
-
-    logger.debug("Saving last model to %s", opts.model_file)
-    torch.save(exp.model.state_dict(), opts.model_file)
+    final = opts.log_folder / 'opts_and_metadata.pt'
+    torch.save(metadata, final)
+    logger.debug("Saving all metadata to %s", final)
 
 
 if __name__ == '__main__':
