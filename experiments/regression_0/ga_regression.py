@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 import sys
@@ -9,10 +8,11 @@ from datetime import datetime
 from functools import cached_property, lru_cache
 from itertools import product
 from pathlib import Path
-from typing import Tuple, Any, Sequence, Literal, Iterator
+from typing import Tuple, Any, Sequence, Literal, Iterator, cast
 
 import numpy as np
 import torch
+import pandas as pd
 from numpy.random import permutation
 from pandas import Series
 from tbparse import SummaryReader
@@ -50,11 +50,7 @@ class Metadata:
     spike_window: tuple[float, float] = (0.07, 0.3)
     weight_error: None | Literal['response', 'binned'] = 'binned'
 
-    def load_datasets(
-            self,
-            precalc_ops: bool = True,
-            train_test_scenes: tuple[Sequence[int], Sequence[int]] | None = None,
-    ) -> Tuple[GaDataset, GaDataset]:
+    def load_data(self):
         scenes, responses, op_cache_dir, weights, fit_fns = GaDataset.load_data(
             data_file=self.opts.data_file,
             k_eig=self.k_eig,
@@ -62,10 +58,17 @@ class Metadata:
             file_mode=self.opts.mesh_file_mode,
             norm_verts=False,
             spike_window=self.spike_window,
-            precalc_ops=precalc_ops,
+            precalc_ops=True,
             weight_error=self.weight_error,
             n_faces=self.n_faces,
         )
+        return scenes, responses, op_cache_dir, weights, fit_fns
+
+    def load_datasets(
+            self,
+            train_test_scenes: tuple[Sequence[int], Sequence[int]] | None = None,
+    ) -> Tuple[GaDataset, GaDataset]:
+        scenes, responses, op_cache_dir, weights, fit_fns = self.load_data()
 
         if train_test_scenes:
             train_scenes, test_scenes = train_test_scenes
@@ -122,6 +125,9 @@ class Metadata:
             test_dataset=test_dataset,
             writer=writer,
         )
+
+    def as_series(self) -> pd.Series:
+        return pd.Series({k: v for k, v in self.__dict__.items() if k not in ('opts',)})
 
 
 @dataclass
@@ -284,7 +290,7 @@ class Experiment:
 
         return np.mean(losses)
 
-    def predict(self, loader, agg_fn=np.concatenate):
+    def predict(self, loader: DataLoader, agg_fn: Any = np.concatenate):
         self.model.eval()
         obs, preds = [], []
 
@@ -321,14 +327,15 @@ def main():
 
         channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
         input_features=('hks',),
-        spike_window=((0.07, 0.75),),
-        weight_error=('response',),
+        spike_window=((0.07, 0.75),), # ) (0.07, 0.4), (0.4, 0.75)),
+        weight_error=(None, 'response', 'binned' ),
         k_eig=(128,),
         learning_rate=(1e-3,),
         decay_every=(50,),
         decay_rate=(0.5,),
-        dropout=(True,),
-        n_faces=(1500, 1250, 1000, 750, 500),
+
+        dropout=(False,),
+        n_faces=(500,),
     )
     opts.init_log()
     train_test_scenes = None
@@ -337,7 +344,7 @@ def main():
     for meta in opts.iter_metadata():
         metas.append(meta)
 
-        train_dataset, test_dataset = meta.load_datasets(precalc_ops=False, train_test_scenes=train_test_scenes)
+        train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
         train_test_scenes = train_dataset.df.scene.values, test_dataset.df.scene.values
         exp = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
 
@@ -378,9 +385,10 @@ if __name__ == '__main__':
 
 
 class Reader:
-    def __init__(self, folder: Path):
-        self.folder = folder
-        self.reader = SummaryReader(str(folder))
+    def __init__(self, metadata: Metadata, train_scenes, test_scenes):
+        self.reader = SummaryReader(str(metadata.log_folder))
+        self._meta = metadata
+        self.train_scenes, self.test_scenes = train_scenes, test_scenes
 
     @property
     def log_path(self) -> Path:
@@ -409,6 +417,154 @@ class Reader:
 
         return ', '.join(f'{k} = {df.loc[k].value}' for k in tags)
 
-    def metadata(self):
-        metafile = self.folder / f"metadata_{self.folder.parts[-1]}.pt"
-        return torch.load(metafile)
+    @property
+    def metadata(self) -> Metadata:
+        return self._meta
+
+    @cached_property
+    def experiment(self):
+        train_ds, test_ds = self._meta.load_datasets(train_test_scenes=(self.train_scenes, self.test_scenes))
+        expt = self.metadata.experiment(train_dataset=train_ds, test_dataset=test_ds)
+        expt.model.load_state_dict(torch.load(self._meta.model_file))
+        return expt
+
+    @cached_property
+    def predictions(self):
+        m = self._meta
+
+        f = m.log_folder / 'predictions.pt'
+        if f.exists():
+            return torch.load(f)
+
+        scenes, responses, op_cache_dir, weights, fit_fns = m.load_data()
+        dataset = GaDataset(
+            df=scenes,
+            responses=responses,
+            root_dir=m.opts.data_file.parent,
+            k_eig=m.k_eig,
+            op_cache_dir=op_cache_dir,
+            normalize=False,
+            file_mode=m.opts.mesh_file_mode,
+            weights=None,
+        )
+
+        expt = self.experiment
+        expt.model.outputs_at = 'global_mean'
+        loader = DataLoader(dataset, batch_size=None, shuffle=False)
+        obs, preds = expt.predict(loader, agg_fn=np.stack)
+        d = dict(obs=obs, preds=preds, scenes=scenes, responses=responses)
+        torch.save(d, f)
+        return d
+
+    def scatter_plot(self):
+        from matplotlib import pyplot as plt
+        from scipy.stats import pearsonr
+
+        fig, axs = plt.subplots(1, 2, figsize=(11, 5))
+        d_preds = self.predictions
+
+        for ax, scenes, ttl in zip(axs, (self.train_scenes, self.test_scenes), ('Train', 'Test')):
+            idx = d_preds['scenes'].scene.isin(scenes)
+            obs = d_preds['obs'][idx, :].reshape(-1)
+            preds = d_preds['preds'][idx, :].reshape(-1)
+
+            ax.plot(obs, preds, 'k.')
+            stats = pearsonr(obs, preds)
+            ax.set_title(f'{ttl} (r = {stats.statistic:.2f})')
+            ax.set_xlabel('Observed response')
+
+        axs[0].set_ylabel('Predicted response')
+        return fig, axs
+
+
+class Readers:
+    def __init__(self, readers: list[Reader]):
+        self.readers = readers
+
+    def __getitem__(self, i: int | str):
+        if isinstance(i, int):
+            return self.readers[i]
+        elif isinstance(i, str):
+            return next(r for r in self.readers if r.log_path == i)
+        else:
+            readers = list(np.array(self.readers)[i])
+            return Readers(readers)
+
+    def __iter__(self):
+        yield from self.readers
+
+    @staticmethod
+    def load_experiments_df(folder: Path):
+        df = cast(pd.DataFrame, pd.read_hdf(Path(folder) / 'experiments.hdf', 'experiments'))
+        # df1 = df.query("""
+        #         spike_window == '0.03, 0.75'
+        #         and weight_mse
+        #     """.replace('\n', ' ')
+        #                ).sort_values('best_loss_train')
+        return df
+
+    def labels(self, tags: Sequence[str] | None = None) -> Iterator[str]:
+        if tags is None:
+            exclude = ('log_folder', 'model_file', 'metadata_file')
+            tags = [
+                k for k, v in self.hparams.items()
+                if (len(set(v)) > 1 and k not in exclude)
+            ]
+
+        for (_, hparams) in self.hparams.loc[:, tags].iterrows():
+            yield ', '.join(f'{k}={hparams[k]}' for k in tags)
+
+    def scatter_plots(self, tags=None):
+        for r, label in zip(self.readers, self.labels(tags=tags)):
+            fig, axs = r.scatter_plot()
+            fig.suptitle(label)
+
+    def plot_loss(
+            self,
+            tags: Sequence[str] | None = None,
+            legend: tuple[float, float] | None = (0.9, 0.05),
+            sharey=True,
+            figsize=(12, 5),
+    ):
+        from matplotlib import pyplot as plt
+
+        fig, axs = plt.subplots(1, 2, figsize=figsize, sharey=sharey)
+        axs[0].set_title('Train')
+        axs[1].set_title('Test')
+
+        for r, label in zip(self.readers, self.labels(tags=tags)):
+            axs[0].plot(*r.scalar('loss/train'), label=label)
+            axs[1].plot(*r.scalar('loss/test'))
+
+        for ax in axs:
+            ax.set_yscale('log')
+            ax.set_ylabel('MSE Loss')
+            ax.set_xlabel('Epoch')
+
+        if legend not in (False, None):
+            if legend is True:
+                fig.legend()
+            else:
+                fig.legend(loc=legend)
+
+        return fig, axs
+
+    @cached_property
+    def hparams(self):
+        h = pd.DataFrame([r.metadata.as_series() for r in self.readers])
+        for k, v in h.items():
+            if v.dtype.name == 'float64' and (v == v.round()).all():
+                h[k] = v.astype('int')
+        return h
+
+    @staticmethod
+    def from_file(f: Path):
+        d = torch.load(f)
+        metas = d['metadata']
+        train_scenes, test_scenes = d['train_scenes'], d['test_scenes']
+
+        readers = [
+            Reader(metadata=m, train_scenes=train_scenes, test_scenes=test_scenes)
+            for m in metas
+        ]
+        return Readers(readers=readers)
