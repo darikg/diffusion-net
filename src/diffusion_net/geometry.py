@@ -628,10 +628,12 @@ def compute_hks(evals, evecs, scales):
     else:
         return out
 
+
 def compute_hks_autoscale(evals, evecs, count):
     # these scales roughly approximate those suggested in the hks paper
     scales = torch.logspace(-2, 0., steps=count, device=evals.device, dtype=evals.dtype)
     return compute_hks(evals, evecs, scales)
+
 
 def normalize_positions(pos, faces=None, method='mean', scale_method='max_rad'):
     # center and unit-scale positions
@@ -664,6 +666,7 @@ def normalize_positions(pos, faces=None, method='mean', scale_method='max_rad'):
     else:
         raise ValueError("unrecognized scale method")
     return pos
+
 
 # Finds the k nearest neighbors of source on target.
 # Return is two tensors (distances, indices). Returned points will be sorted in increasing order of distance.

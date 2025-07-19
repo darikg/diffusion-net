@@ -8,11 +8,11 @@ from datetime import datetime
 from functools import cached_property, lru_cache
 from itertools import product
 from pathlib import Path
-from typing import Tuple, Any, Sequence, Literal, Iterator, cast
+from typing import Tuple, Any, Sequence, Iterator, cast
 
 import numpy as np
-import torch
 import pandas as pd
+import torch
 from numpy.random import permutation
 from pandas import Series
 from tbparse import SummaryReader
@@ -24,14 +24,14 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add th
 import diffusion_net  # noqa
 from diffusion_net.utils import toNP   # noqa
 from diffusion_net.layers import DiffusionNet   # noqa
-from ga_dataset import GaDataset   # noqa
+from ga_dataset import GaDataset, UseVisibleMode, WeightErrorMode, MeshData, UseColorMode, NormVertMode  # noqa
 
 
 def hparam_combinations(hparams: dict[str, Sequence[Any]]) -> Iterator[dict[str, Any]]:
     for vals in product(*hparams.values()):
         yield {k: v for k, v in zip(hparams.keys(), vals)}
-
-
+        
+        
 @dataclass
 class Metadata:
     opts: Options
@@ -48,17 +48,22 @@ class Metadata:
     dropout: bool = False
     n_faces: int | None = None
     spike_window: tuple[float, float] = (0.07, 0.3)
-    weight_error: None | Literal['response', 'binned'] = 'binned'
+    weight_error: WeightErrorMode | None = None
+    use_visible: UseVisibleMode | None = None
+    use_color: UseColorMode | None = None
+    norm_verts: NormVertMode | None = None
+
+    curr_learning_rate: float | None = None
+
+    def __post_init__(self):
+        self.curr_learning_rate = self.learning_rate
 
     def load_data(self):
         scenes, responses, op_cache_dir, weights, fit_fns = GaDataset.load_data(
             data_file=self.opts.data_file,
-            k_eig=self.k_eig,
             channel=self.channel,
             file_mode=self.opts.mesh_file_mode,
-            norm_verts=False,
             spike_window=self.spike_window,
-            precalc_ops=True,
             weight_error=self.weight_error,
             n_faces=self.n_faces,
         )
@@ -88,9 +93,11 @@ class Metadata:
                 root_dir=self.opts.data_file.parent,
                 k_eig=self.k_eig,
                 op_cache_dir=op_cache_dir,
-                normalize=False,
                 file_mode=self.opts.mesh_file_mode,
                 weights=weights[idx] if weights is not None else None,
+                use_visible=self.use_visible,
+                use_color=self.use_color,
+                norm_verts=self.norm_verts,
             )
             for idx in (train_idxs, test_idxs)
         )
@@ -98,8 +105,14 @@ class Metadata:
         return train_dataset, test_dataset
 
     def make_model(self, n_channels_out: int = 1) -> DiffusionNet:
+        C_in = 3 if self.input_features == 'xyz' else 16
+        if self.use_visible:
+            C_in += 1
+        if self.use_color:
+            C_in += 4
+
         return DiffusionNet(
-            C_in=3 if self.input_features == 'xyz' else 16,
+            C_in=C_in,
             C_out=n_channels_out,
             C_width=64,
             N_block=4,
@@ -146,8 +159,11 @@ class Options:
     decay_rate: tuple[float]
     dropout: tuple[bool]
     spike_window: tuple[tuple[float, float]]
-    weight_error: tuple[None | Literal['response', 'binned']]
+    weight_error: tuple[WeightErrorMode | None]
     n_faces: tuple[None | int]
+    use_visible: tuple[UseVisibleMode | None]
+    use_color: tuple[UseColorMode | None]
+    norm_verts: tuple[NormVertMode | None]
 
     train_frac: float = 0.95
     n_epoch: int = 1
@@ -210,24 +226,23 @@ class Experiment:
     test_dataset: GaDataset
     writer: SummaryWriter
 
-    def load_item(self, data):
-        verts, faces, frames, mass, L, evals, evecs, gradX, gradY, labels, weights = data
-        verts = verts.to(self.device)
-        faces = faces.to(self.device)
-        _frames = frames.to(self.device)
-        mass = mass.to(self.device)
-        L = L.to(self.device)
-        evals = evals.to(self.device)
-        evecs = evecs.to(self.device)
-        gradX = gradX.to(self.device)
-        gradY = gradY.to(self.device)
+    def load_item(self, data: MeshData):
+        verts = data.verts.to(self.device)
+        faces = data.faces.to(self.device)
+        # _frames = frames.to(self.device)
+        mass = data.mass.to(self.device)
+        L = data.L.to(self.device)
+        evals = data.evals.to(self.device)
+        evecs = data.evecs.to(self.device)
+        gradX = data.gradX.to(self.device)
+        gradY = data.gradY.to(self.device)
 
-        if weights is not None:
+        if (weights := data.weight) is not None:
             if not isinstance(weights, torch.Tensor):
                 weights = torch.Tensor(np.asarray(weights))
             weights = weights.to(self.device)
 
-        if not isinstance(labels, torch.Tensor):
+        if not isinstance((labels := data.labels), torch.Tensor):
             labels = torch.Tensor(labels)
 
         labels = labels.to(self.device)
@@ -243,6 +258,12 @@ class Experiment:
         else:
             raise NotImplementedError(self.metadata.input_features)
 
+        if self.metadata.use_visible:
+            features = torch.cat([features, data.visible.reshape(-1, 1).to(self.device)], dim=1)
+
+        if self.metadata.use_color:
+            features = torch.cat([features, data.color.to(self.device)], dim=1)
+
         # Apply the model
         preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
         return labels, preds, weights
@@ -250,9 +271,9 @@ class Experiment:
     def train_epoch(self, loader: DataLoader, epoch: int) -> float:
         # Returns mean training loss
         if epoch > 0 and epoch % self.metadata.decay_every == 0:
-            self.metadata.learning_rate *= self.metadata.decay_rate
+            self.metadata.curr_learning_rate *= self.metadata.decay_rate
             for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.metadata.learning_rate
+                param_group['lr'] = self.metadata.curr_learning_rate
 
         self.model.train()
         self.optimizer.zero_grad()
@@ -320,20 +341,23 @@ def main():
         # channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
 
         # data_file=Path(r"D:\resynth\run_48_49\resynth_everything3\run00048_resynth.hdf"),
-        data_file=Path(r"D:\resynth\run_48_49\many_faces\run00048_resynth.hdf"),
+        # data_file=Path(r"D:\resynth\run_48_49\many_faces\run00048_resynth.hdf"),
+        data_file=Path(r"D:\resynth\run_48_49\run00048_simp_vis_color\run00048_resynth.hdf"),
         n_epoch=250,
         mesh_file_mode='simplified',
         train_frac=0.95,
 
         channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
         input_features=('hks',),
-        spike_window=((0.07, 0.75),), # ) (0.07, 0.4), (0.4, 0.75)),
-        weight_error=(None, 'response', 'binned' ),
+        spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
+        weight_error=(None,),
         k_eig=(128,),
         learning_rate=(1e-3,),
         decay_every=(50,),
         decay_rate=(0.5,),
-
+        use_visible=(None,),  # 'orig', 'shuffled'),
+        use_color=(None,),
+        norm_verts=(None, ('mean', 'max_rad'), ('bbox', 'area')),
         dropout=(False,),
         n_faces=(500,),
     )
@@ -346,28 +370,28 @@ def main():
 
         train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
         train_test_scenes = train_dataset.df.scene.values, test_dataset.df.scene.values
-        exp = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+        expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
 
-        train_loader = DataLoader(exp.train_dataset, batch_size=None, shuffle=True)
-        test_loader = DataLoader(exp.test_dataset, batch_size=None)
+        train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
+        test_loader = DataLoader(expt.test_dataset, batch_size=None)
 
         best_loss = np.inf
 
         for epoch in range(opts.n_epoch):
-            train_loss = exp.train_epoch(train_loader, epoch)
-            exp.writer.add_scalar(f'loss/train', train_loss, epoch)
-            test_loss = exp.test(test_loader)
-            exp.writer.add_scalar(f'loss/test', test_loss, epoch)
+            train_loss = expt.train_epoch(train_loader, epoch)
+            expt.writer.add_scalar(f'loss/train', train_loss, epoch)
+            test_loss = expt.test(test_loader)
+            expt.writer.add_scalar(f'loss/test', test_loss, epoch)
             logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
 
             if test_loss < best_loss:
                 best_loss = test_loss
                 logger.debug('Saving best test loss to %s', meta.model_file)
-                torch.save(exp.model.state_dict(), meta.model_file)
+                torch.save(expt.model.state_dict(), meta.model_file)
 
         mf = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
         logger.debug("Saving last model to %s", mf)
-        torch.save(exp.model.state_dict(), meta.model_file)
+        torch.save(expt.model.state_dict(), meta.model_file)
 
     metadata = dict(
         opts=opts,
@@ -389,6 +413,7 @@ class Reader:
         self.reader = SummaryReader(str(metadata.log_folder))
         self._meta = metadata
         self.train_scenes, self.test_scenes = train_scenes, test_scenes
+        self._experiment: Experiment | None = None
 
     @property
     def log_path(self) -> Path:
@@ -421,10 +446,11 @@ class Reader:
     def metadata(self) -> Metadata:
         return self._meta
 
-    @cached_property
     def experiment(self):
+        if self._experiment:
+            return self._experiment
         train_ds, test_ds = self._meta.load_datasets(train_test_scenes=(self.train_scenes, self.test_scenes))
-        expt = self.metadata.experiment(train_dataset=train_ds, test_dataset=test_ds)
+        expt = self._experiment = self.metadata.experiment(train_dataset=train_ds, test_dataset=test_ds, )
         expt.model.load_state_dict(torch.load(self._meta.model_file))
         return expt
 
@@ -443,12 +469,14 @@ class Reader:
             root_dir=m.opts.data_file.parent,
             k_eig=m.k_eig,
             op_cache_dir=op_cache_dir,
-            normalize=False,
             file_mode=m.opts.mesh_file_mode,
             weights=None,
+            use_visible=m.use_visible,
+            use_color=m.use_color,
+            norm_verts=m.norm_verts,
         )
 
-        expt = self.experiment
+        expt = self.experiment()
         expt.model.outputs_at = 'global_mean'
         loader = DataLoader(dataset, batch_size=None, shuffle=False)
         obs, preds = expt.predict(loader, agg_fn=np.stack)

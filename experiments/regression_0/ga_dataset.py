@@ -1,16 +1,16 @@
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, Tuple, Sequence, Literal, Callable
+from typing import cast, Tuple, Sequence, Literal, Callable, TypeAlias
 
 import numpy as np
+import pandas as pd
 import potpourri3d as pp3d
 import torch
-import pandas as pd
 from pandas import DataFrame, Series
 from pandas import read_hdf
 from torch.utils.data import Dataset
-from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net  # noqa
@@ -61,6 +61,33 @@ def apply_fit_fns(responses: pd.DataFrame, fit_fns: list[Callable[[Series], Seri
     return pd.concat(ch_weights, axis=1)
 
 
+WeightErrorMode = Literal['response', 'binned']
+UseVisibleMode = Literal['orig', 'shuffled']
+UseColorMode = Literal['orig', 'shuffled']
+
+
+_NormMethod = Literal['mean', 'bbox']
+_ScaleMethod = Literal['max_rad', 'area']
+NormVertMode: TypeAlias = tuple[_NormMethod, _ScaleMethod]
+
+
+@dataclass
+class MeshData:
+    verts: torch.Tensor
+    faces: torch.Tensor
+    frames: torch.Tensor
+    mass: torch.Tensor
+    L: torch.Tensor
+    evals: torch.Tensor
+    evecs: torch.Tensor
+    gradX: torch.Tensor
+    gradY: torch.Tensor
+    labels: torch.Tensor
+    weight: torch.Tensor | None
+    visible: torch.Tensor | None
+    color: torch.Tensor | None
+
+
 class GaDataset(Dataset):
     def __init__(
             self,
@@ -69,9 +96,12 @@ class GaDataset(Dataset):
             root_dir,
             k_eig,
             file_mode: str,
+            use_visible: UseVisibleMode | None,
+            use_color: UseColorMode | None,
+            norm_verts: NormVertMode | None,
             op_cache_dir=None,
-            normalize=False,
             weights: np.ndarray | None = None,
+
     ):
         self.df = df
         self.responses = responses
@@ -80,50 +110,81 @@ class GaDataset(Dataset):
         self.k_eig = k_eig
         self.op_cache_dir = op_cache_dir
         self.entries = {}
-        self.normalize = normalize
         self.file_mode = file_mode
-
-        # center and unit scale
-        # verts = diffusion_net.geometry.normalize_positions(verts)
-
-        # for ind, label in enumerate(self.labels_list):
-        #     self.labels_list[ind] = torch.tensor(label)
+        self.use_visible = use_visible
+        self.use_color = use_color
+        self.norm_verts = norm_verts
 
     def __len__(self):
         return self.df.shape[0]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> MeshData:
         response = self.responses[idx]
         weight = self.weights[idx] if self.weights is not None else None
         path = self.df[self.file_mode].iloc[idx]
         mesh_file = self.root_dir / path
+        visible = color = None
 
         if mesh_file.suffix == '.vtp':
             import pyvista as pv
             mesh = pv.read(mesh_file)
             verts, faces = mesh.points, mesh.regular_faces
+
+            if self.use_visible:
+                if self.use_visible == 'orig':
+                    visible = torch.tensor(mesh.point_data['visible']).float()
+                elif self.use_visible == 'shuffled':
+                    visible = torch.tensor(mesh.point_data['shuffled_visible']).float()
+                else:
+                    raise ValueError(self.use_visible)
+
+            if self.use_color:
+                if self.use_color == 'orig':
+                    color = torch.tensor(mesh.point_data['color']).float()
+                elif self.use_color == 'shuffled':
+                    color = torch.tensor(mesh.point_data['shuffled_color']).float()
         else:
             verts, faces = pp3d.read_mesh(str(mesh_file))
+            if self.use_visible:
+                raise ValueError("Can't get visible from ply files")
+            if self.use_color:
+                raise ValueError("Can't get color from ply files")
 
         verts = torch.tensor(verts).float()
 
-        if self.normalize:
-            verts = diffusion_net.geometry.normalize_positions(verts)
+        if self.norm_verts:
+            verts = diffusion_net.geometry.normalize_positions(
+                verts, method=self.norm_verts[0], scale_method=self.norm_verts[1])
 
         faces = torch.tensor(faces)
         frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(
             verts, faces, k_eig=self.k_eig, op_cache_dir=self.op_cache_dir)
-        return verts, faces, frames, mass, L, evals, evecs, gradX, gradY, response, weight
+
+        if self.use_visible and visible is None:
+            raise ValueError("No mesh visibility data!")
+
+        return MeshData(
+            verts=verts,
+            faces=faces,
+            frames=frames,
+            mass=mass,
+            L=L,
+            evals=evals,
+            evecs=evecs,
+            gradX=gradX,
+            gradY=gradY,
+            weight=weight,
+            labels=response,
+            visible=visible,
+            color=color,
+        )
 
     @staticmethod
     def load_data(
             data_file: Path,
             channel: int | Sequence[int],
             file_mode: str,
-            norm_verts: bool,
-            k_eig: int,
             spike_window: tuple[float, float],
-            precalc_ops: bool = True,
             weight_error: None | Literal['response', 'binned'] = None,
             n_faces: int | None = None,
     ) -> Tuple[DataFrame, np.ndarray, Path, np.ndarray, list[Callable[[Series], Series]] | None]:
@@ -166,23 +227,4 @@ class GaDataset(Dataset):
             weights = fit_fns = None
 
         op_cache_dir = data_file.parent / 'op_cache'
-
-        if precalc_ops:
-            print('Pre-calculating operators')
-            for file in tqdm(scenes[file_mode]):
-                mesh_file = data_file.parent / file
-                if mesh_file.suffix == '.ply':
-                    verts, faces = pp3d.read_mesh(str(mesh_file))
-                else:
-                    import pyvista as pv
-                    mesh = pv.read(mesh_file)
-                    verts, faces = mesh.points, mesh.regular_faces
-
-                verts = torch.tensor(verts).float()
-                faces = torch.tensor(faces)
-                if norm_verts:
-                    verts = diffusion_net.geometry.normalize_positions(verts)
-
-                _ = diffusion_net.geometry.get_operators(verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
-
         return scenes_, responses_.values, op_cache_dir, weights, fit_fns

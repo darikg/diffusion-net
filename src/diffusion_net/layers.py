@@ -211,9 +211,8 @@ class DiffusionNetBlock(nn.Module):
 
         # Compute gradient features, if using
         if self.with_gradient_features:
-
             # Compute gradients
-            x_grads = [] # Manually loop over the batch (if there is a batch dimension) since torch.mm() doesn't support batching
+            x_grads = []  # Manually loop over the batch (if there is a batch dimension) since torch.mm() doesn't support batching
             for b in range(B):
                 # gradient after diffusion
                 x_gradX = torch.mm(gradX[b,...], x_diffuse[b,...])
@@ -231,7 +230,6 @@ class DiffusionNetBlock(nn.Module):
             # Stack inputs to mlp
             feature_combined = torch.cat((x_in, x_diffuse), dim=-1)
 
-        
         # Apply the mlp
         x0_out = self.mlp(feature_combined)
 
@@ -310,7 +308,6 @@ class DiffusionNet(nn.Module):
             self.blocks.append(block)
             self.add_module("block_"+str(i_block), self.blocks[-1])
 
-    
     def forward(self, x_in, mass, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):
         """
         A forward pass on the DiffusionNet.
@@ -338,11 +335,11 @@ class DiffusionNet(nn.Module):
             x_out (tensor):    Output with dimension [N,C_out] or [B,N,C_out]
         """
 
-
-        ## Check dimensions, and append batch dimension if not given
+        # Check dimensions, and append batch dimension if not given
         if x_in.shape[-1] != self.C_in: 
             raise ValueError("DiffusionNet was constructed with C_in={}, but x_in has last dim={}".format(self.C_in,x_in.shape[-1]))
         N = x_in.shape[-2]
+
         if len(x_in.shape) == 2:
             appended_batch_dim = True
 
@@ -360,7 +357,8 @@ class DiffusionNet(nn.Module):
         elif len(x_in.shape) == 3:
             appended_batch_dim = False
         
-        else: raise ValueError("x_in should be tensor with shape [N,C] or [B,N,C]")
+        else:
+            raise ValueError("x_in should be tensor with shape [N,C] or [B,N,C]")
         
         # Apply the first linear layer
         x = self.first_lin(x_in)
