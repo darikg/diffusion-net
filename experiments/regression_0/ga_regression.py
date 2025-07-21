@@ -281,7 +281,7 @@ class Experiment:
         self.optimizer.zero_grad()
         losses = []
 
-        for data in tqdm(loader):
+        for data in tqdm(loader, leave=False):
             labels, preds, weights = self.load_item(data)
             err = torch.square(preds - labels)
             if weights is not None:
@@ -302,7 +302,7 @@ class Experiment:
         losses = []
 
         with torch.no_grad():
-            for data in tqdm(loader):
+            for data in tqdm(loader, leave=False):
                 labels, preds, weights = self.load_item(data)
                 err = torch.square(preds - labels)
                 if weights is not None:
@@ -380,12 +380,12 @@ def main():
 
         best_loss = np.inf
 
-        for epoch in range(opts.n_epoch):
+        for epoch in (pbar := tqdm(range(opts.n_epoch))):
             train_loss = expt.train_epoch(train_loader, epoch)
             expt.writer.add_scalar(f'loss/train', train_loss, epoch)
             test_loss = expt.test(test_loader)
             expt.writer.add_scalar(f'loss/test', test_loss, epoch)
-            logger.debug(f"Epoch {epoch}: Train: {train_loss:.5e}  Test: {test_loss:.5e}")
+            pbar.set_postfix(dict(train=train_loss, test=test_loss))
 
             if test_loss < best_loss:
                 best_loss = test_loss
