@@ -598,6 +598,7 @@ def from_basis(values, basis):
     else:
         return torch.matmul(basis, values)
 
+
 def compute_hks(evals, evecs, scales):
     """
     Inputs:

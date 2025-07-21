@@ -45,6 +45,7 @@ class Metadata:
     learning_rate: float = 1e-3
     decay_every: int = 50
     decay_rate: float = 0.5
+    n_blocks: int = 4
     dropout: bool = False
     n_faces: int | None = None
     spike_window: tuple[float, float] = (0.07, 0.3)
@@ -115,7 +116,7 @@ class Metadata:
             C_in=C_in,
             C_out=n_channels_out,
             C_width=64,
-            N_block=4,
+            N_block=self.n_blocks,
             last_activation=None,
             outputs_at='global_mean',
             dropout=self.dropout,
@@ -164,6 +165,7 @@ class Options:
     use_visible: tuple[UseVisibleMode | None]
     use_color: tuple[UseColorMode | None]
     norm_verts: tuple[NormVertMode | None]
+    n_blocks: tuple[int, ...]
 
     train_frac: float = 0.95
     n_epoch: int = 1
@@ -357,7 +359,8 @@ def main():
         decay_rate=(0.5,),
         use_visible=(None,),  # 'orig', 'shuffled'),
         use_color=(None,),
-        norm_verts=(None, ('mean', 'max_rad'), ('bbox', 'area')),
+        norm_verts=(None,),  # ('mean', 'max_rad'), ('bbox', 'area')),
+        n_blocks=(3, 4, 5),
         dropout=(False,),
         n_faces=(500,),
     )
