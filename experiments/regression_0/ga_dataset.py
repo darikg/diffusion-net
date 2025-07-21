@@ -154,7 +154,7 @@ class GaDataset(Dataset):
 
         if self.norm_verts:
             verts = diffusion_net.geometry.normalize_positions(
-                verts, method=self.norm_verts[0], scale_method=self.norm_verts[1])
+                verts, faces=faces, method=self.norm_verts[0], scale_method=self.norm_verts[1])
 
         faces = torch.tensor(faces)
         frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(
