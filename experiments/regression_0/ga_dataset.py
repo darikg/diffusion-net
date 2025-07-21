@@ -70,6 +70,8 @@ _NormMethod = Literal['mean', 'bbox']
 _ScaleMethod = Literal['max_rad', 'area']
 NormVertMode: TypeAlias = tuple[_NormMethod, _ScaleMethod]
 
+FeatureMode = Literal['xyz', 'hks'] | tuple[Literal['dirac'], float]
+
 
 @dataclass
 class MeshData:
@@ -99,11 +101,13 @@ class GaDataset(Dataset):
             use_visible: UseVisibleMode | None,
             use_color: UseColorMode | None,
             norm_verts: NormVertMode | None,
+            features: FeatureMode,
             op_cache_dir=None,
             weights: np.ndarray | None = None,
 
     ):
         self.df = df
+        self.features = features
         self.responses = responses
         self.weights = weights
         self.root_dir = root_dir
@@ -163,6 +167,14 @@ class GaDataset(Dataset):
         if self.use_visible and visible is None:
             raise ValueError("No mesh visibility data!")
 
+        match self.features:
+            case ('dirac', _tau):
+                from scipy.io import loadmat
+                _data = loadmat(self.root_dir / self.df.dirac_eigs.iloc[idx])
+
+                # Overwrite the cached evecs / evals
+                evals, evecs = _data['e_vals'], _data['e_vecs']
+
         return MeshData(
             verts=verts,
             faces=faces,
@@ -185,18 +197,21 @@ class GaDataset(Dataset):
             channel: int | Sequence[int],
             file_mode: str,
             spike_window: tuple[float, float],
+            n_faces: int | None,
+            features: FeatureMode,
             weight_error: None | Literal['response', 'binned'] = None,
-            n_faces: int | None = None,
     ) -> Tuple[DataFrame, np.ndarray, Path, np.ndarray, list[Callable[[Series], Series]] | None]:
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
         scenes = scenes[scenes[file_mode] != '']
 
         if n_faces is not None:
-            def _map_file(f: str):
-                f = Path(f)
-                return str(f.with_suffix(f'.{n_faces}_faces' + f.suffix))
+            scenes[file_mode] = scenes[file_mode].apply(_suffixer(f'.{n_faces}_faces'))
 
-            scenes[file_mode] = scenes[file_mode].apply(_map_file)
+        match features:
+            case ('dirac', tau):
+                suffices = [f'.{n_faces}_faces'] if n_faces else []
+                suffices.append(f'.tau{tau:.3f}')
+                scenes['dirac_eigs'] = scenes['dirac_eigs'].apply(_suffixer(*suffices))
 
         t0, t1 = spike_window
         spikes = cast(DataFrame, read_hdf(data_file, 'spikes'))
@@ -228,3 +243,13 @@ class GaDataset(Dataset):
 
         op_cache_dir = data_file.parent / 'op_cache'
         return scenes_, responses_.values, op_cache_dir, weights, fit_fns
+
+
+def _suffixer(*suffices: str) -> Callable[[str], str]:
+    suffix = ''.join(suffices)
+
+    def _map_file(f: str):
+        f = Path(f)
+        return str(f.with_suffix(suffix + f.suffix))
+
+    return _map_file

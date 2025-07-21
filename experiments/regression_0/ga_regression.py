@@ -30,7 +30,7 @@ from ga_dataset import GaDataset, UseVisibleMode, WeightErrorMode, MeshData, Use
 def hparam_combinations(hparams: dict[str, Sequence[Any]]) -> Iterator[dict[str, Any]]:
     for vals in product(*hparams.values()):
         yield {k: v for k, v in zip(hparams.keys(), vals)}
-        
+
         
 @dataclass
 class Metadata:
@@ -53,7 +53,6 @@ class Metadata:
     use_visible: UseVisibleMode | None = None
     use_color: UseColorMode | None = None
     norm_verts: NormVertMode | None = None
-
     curr_learning_rate: float | None = None
 
     def __post_init__(self):
@@ -67,6 +66,7 @@ class Metadata:
             spike_window=self.spike_window,
             weight_error=self.weight_error,
             n_faces=self.n_faces,
+            features=self.input_features,
         )
         return scenes, responses, op_cache_dir, weights, fit_fns
 
@@ -99,6 +99,7 @@ class Metadata:
                 use_visible=self.use_visible,
                 use_color=self.use_color,
                 norm_verts=self.norm_verts,
+                features=self.input_features,
             )
             for idx in (train_idxs, test_idxs)
         )
@@ -253,12 +254,13 @@ class Experiment:
         #     verts = diffusion_net.utils.random_rotate_points(verts)
 
         # Construct features
-        if self.metadata.input_features == 'xyz':
-            features = verts
-        elif self.metadata.input_features == 'hks':
-            features = diffusion_net.geometry.compute_hks_autoscale(evals, evecs, 16)
-        else:
-            raise NotImplementedError(self.metadata.input_features)
+        match self.metadata.input_features:
+            case 'xyz':
+                features = verts
+            case 'hks' | ('dirac', _):
+                features = diffusion_net.geometry.compute_hks_autoscale(evals, evecs, 16)
+            case x:
+                raise NotImplementedError(x)
 
         if self.metadata.use_visible:
             features = torch.cat([features, data.visible.reshape(-1, 1).to(self.device)], dim=1)
@@ -477,6 +479,7 @@ class Reader:
             use_visible=m.use_visible,
             use_color=m.use_color,
             norm_verts=m.norm_verts,
+            features=m.input_features,
         )
 
         expt = self.experiment()
