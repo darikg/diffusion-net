@@ -24,7 +24,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add th
 import diffusion_net  # noqa
 from diffusion_net.utils import toNP   # noqa
 from diffusion_net.layers import DiffusionNet   # noqa
-from ga_dataset import GaDataset, UseVisibleMode, WeightErrorMode, MeshData, UseColorMode, NormVertMode  # noqa
+from ga_dataset import GaDataset, UseVisibleMode, WeightErrorMode, MeshData, UseColorMode, NormVertMode, \
+    FeatureMode  # noqa
 
 
 def hparam_combinations(hparams: dict[str, Sequence[Any]]) -> Iterator[dict[str, Any]]:
@@ -39,7 +40,7 @@ class Metadata:
     model_file: Path
     metadata_file: Path
 
-    input_features: str
+    input_features: FeatureMode
     channel: int | Sequence[int]
     k_eig: int = 128
     learning_rate: float = 1e-3
@@ -153,7 +154,7 @@ class Options:
     log_folder: Path
     log_file: Path
 
-    input_features: tuple[str]
+    input_features: tuple[FeatureMode]
     channel: tuple[int | Sequence[int]]
     k_eig: tuple[int]
     learning_rate: tuple[float]
@@ -217,6 +218,8 @@ class Options:
         formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
         console.setFormatter(formatter)
         logging.getLogger('').addHandler(console)
+
+        logging.getLogger('matplotlib').setLevel('INFO')
 
 
 @dataclass
@@ -346,33 +349,33 @@ def main():
 
         # data_file=Path(r"D:\resynth\run_48_49\resynth_everything3\run00048_resynth.hdf"),
         # data_file=Path(r"D:\resynth\run_48_49\many_faces\run00048_resynth.hdf"),
-        data_file=Path(r"D:\resynth\run_48_49\run00048_simp_vis_color\run00048_resynth.hdf"),
-        n_epoch=250,
+        # data_file=Path(r"D:\resynth\run_48_49\run00048_simp_vis_color\run00048_resynth.hdf"),
+        data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
+        n_epoch=1,
         mesh_file_mode='simplified',
         train_frac=0.95,
 
         channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
-        input_features=('hks',),
         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
         weight_error=(None,),
         k_eig=(128,),
         learning_rate=(1e-3,),
         decay_every=(50,),
         decay_rate=(0.5,),
+        # input_features=('xyz', 'hks'), #
+        input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
         use_visible=(None,),  # 'orig', 'shuffled'),
         use_color=(None,),
         norm_verts=(None,),  # ('mean', 'max_rad'), ('bbox', 'area')),
-        n_blocks=(3, 4, 5),
+        n_blocks=(4,),  # (3, 4, 5),
         dropout=(False,),
         n_faces=(500,),
     )
     opts.init_log()
     train_test_scenes = None
-    metas = []
+    metas = list(opts.iter_metadata())
 
-    for meta in opts.iter_metadata():
-        metas.append(meta)
-
+    for meta in tqdm(metas):
         train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
         train_test_scenes = train_dataset.df.scene.values, test_dataset.df.scene.values
         expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
@@ -391,11 +394,11 @@ def main():
 
             if test_loss < best_loss:
                 best_loss = test_loss
-                logger.debug('Saving best test loss to %s', meta.model_file)
+                # logger.debug('Saving best test loss to %s', meta.model_file)
                 torch.save(expt.model.state_dict(), meta.model_file)
 
         mf = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
-        logger.debug("Saving last model to %s", mf)
+        # logger.debug("Saving last model to %s", mf)
         torch.save(expt.model.state_dict(), meta.model_file)
 
     metadata = dict(

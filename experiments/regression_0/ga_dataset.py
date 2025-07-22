@@ -168,12 +168,12 @@ class GaDataset(Dataset):
             raise ValueError("No mesh visibility data!")
 
         match self.features:
-            case ('dirac', _tau):
+            case ('dirac', _tau):    # Overwrite the cached evecs / evals
                 from scipy.io import loadmat
-                _data = loadmat(self.root_dir / self.df.dirac_eigs.iloc[idx])
-
-                # Overwrite the cached evecs / evals
-                evals, evecs = _data['e_vals'], _data['e_vecs']
+                de_file = self.root_dir / self.df.dirac_eigs.iloc[idx]
+                _data = loadmat(str(de_file))
+                evals = torch.tensor(_data['e_vals'].squeeze(axis=1)).float()  # Drop singleton column dim
+                evecs = torch.tensor(_data['e_vecs'][:, 0, :]).float()  # [:, 0, :] takes the w component of the quaternion wxyz
 
         return MeshData(
             verts=verts,
@@ -202,7 +202,7 @@ class GaDataset(Dataset):
             weight_error: None | Literal['response', 'binned'] = None,
     ) -> Tuple[DataFrame, np.ndarray, Path, np.ndarray, list[Callable[[Series], Series]] | None]:
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
-        scenes = scenes[scenes[file_mode] != '']
+        scenes = scenes[scenes[file_mode] != ''].copy()
 
         if n_faces is not None:
             scenes[file_mode] = scenes[file_mode].apply(_suffixer(f'.{n_faces}_faces'))
@@ -211,6 +211,7 @@ class GaDataset(Dataset):
             case ('dirac', tau):
                 suffices = [f'.{n_faces}_faces'] if n_faces else []
                 suffices.append(f'.tau{tau:.3f}')
+                scenes = scenes[scenes['dirac_eigs'] != ''].copy()
                 scenes['dirac_eigs'] = scenes['dirac_eigs'].apply(_suffixer(*suffices))
 
         t0, t1 = spike_window

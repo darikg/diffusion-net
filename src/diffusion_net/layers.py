@@ -36,10 +36,9 @@ class LearnedTimeDiffusion(nn.Module):
         super(LearnedTimeDiffusion, self).__init__()
         self.C_inout = C_inout
         self.diffusion_time = nn.Parameter(torch.Tensor(C_inout))  # (C)
-        self.method = method # one of ['spectral', 'implicit_dense']
+        self.method = method  # one of ['spectral', 'implicit_dense']
 
         nn.init.constant_(self.diffusion_time, 0.0)
-        
 
     def forward(self, x, L, mass, evals, evecs):
 
