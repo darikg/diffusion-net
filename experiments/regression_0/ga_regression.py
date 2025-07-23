@@ -187,22 +187,21 @@ class Options:
             **kwargs
         )
 
-    def metadata(self, **kwargs) -> Metadata:
-        stamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        log_folder = self.log_folder / stamp
+    def metadata(self, idx: int, **kwargs) -> Metadata:
+        log_folder = self.log_folder / f'expt_{idx:03}'
         log_folder.mkdir(parents=True, exist_ok=True)
         return Metadata(
             opts=self,
             log_folder=log_folder,
-            model_file=log_folder / f'diffnet_model_{stamp}.pt',
-            metadata_file=log_folder / f'metadata_{stamp}.pt',
+            model_file=log_folder / f'diffnet_model.pt',
+            metadata_file=log_folder / f'metadata.pt',
             **kwargs,
         )
 
     def iter_metadata(self) -> Iterator[Metadata]:
         hparams = {k: v for k, v in self.__dict__.items() if isinstance(v, tuple)}
-        for hp in hparam_combinations(hparams):
-            yield self.metadata(**hp)
+        for idx, hp in enumerate(hparam_combinations(hparams)):
+            yield self.metadata(idx=idx, **hp)
 
     def init_log(self):
         logging.basicConfig(
@@ -351,7 +350,7 @@ def main():
         # data_file=Path(r"D:\resynth\run_48_49\many_faces\run00048_resynth.hdf"),
         # data_file=Path(r"D:\resynth\run_48_49\run00048_simp_vis_color\run00048_resynth.hdf"),
         data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
-        n_epoch=1,
+        n_epoch=250,
         mesh_file_mode='simplified',
         train_frac=0.95,
 
@@ -362,8 +361,8 @@ def main():
         learning_rate=(1e-3,),
         decay_every=(50,),
         decay_rate=(0.5,),
-        # input_features=('xyz', 'hks'), #
-        input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
+        # input_features=('xyz', 'hks'),  #
+        input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.33), ('dirac', 0.66), ('dirac', 0.99)),
         use_visible=(None,),  # 'orig', 'shuffled'),
         use_color=(None,),
         norm_verts=(None,),  # ('mean', 'max_rad'), ('bbox', 'area')),
@@ -397,9 +396,8 @@ def main():
                 # logger.debug('Saving best test loss to %s', meta.model_file)
                 torch.save(expt.model.state_dict(), meta.model_file)
 
-        mf = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
-        # logger.debug("Saving last model to %s", mf)
-        torch.save(expt.model.state_dict(), meta.model_file)
+        last_model_file = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
+        torch.save(expt.model.state_dict(), last_model_file)
 
     metadata = dict(
         opts=opts,
@@ -410,6 +408,7 @@ def main():
     final = opts.log_folder / 'opts_and_metadata.pt'
     torch.save(metadata, final)
     logger.debug("Saving all metadata to %s", final)
+    print(f'file = Path(r"{final}")')
 
 
 if __name__ == '__main__':
