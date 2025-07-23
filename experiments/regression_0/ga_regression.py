@@ -415,6 +415,34 @@ if __name__ == '__main__':
     main()
 
 
+@dataclass
+class ScatterData:
+    metadata: Metadata
+    obs: np.ndarray
+    preds: np.ndarray
+    scenes: pd.DataFrame
+    responses: np.ndarray
+
+    def loc(
+            self,
+            scene_ids: np.ndarray | Sequence[int] | None,
+            channel: int | None = None,
+    ):
+        obs, preds = self.obs, self.preds
+
+        if scene_ids is not None:
+            idx = self.scenes['scene'].isin(scene_ids)
+            obs, preds = obs[idx, :], preds[idx, :]
+
+        if channel is not None:
+            channel_idx = self.metadata.channel.index(channel)
+            obs, preds = obs[:, channel_idx], preds[:, channel_idx]
+        else:
+            obs, preds = obs.reshape(-1), preds.reshape(-1)
+
+        return obs, preds
+
+
 class Reader:
     def __init__(self, metadata: Metadata, train_scenes, test_scenes):
         self.reader = SummaryReader(str(metadata.log_folder))
@@ -462,12 +490,14 @@ class Reader:
         return expt
 
     @cached_property
-    def predictions(self):
+    def scatter_data(self) -> ScatterData:
         m = self._meta
 
         f = m.log_folder / 'predictions.pt'
         if f.exists():
-            return torch.load(f)
+            d = torch.load(f)
+            return ScatterData(
+                metadata=self._meta, obs=d['obs'], preds=d['preds'], scenes=d['scenes'], responses=d['responses'])
 
         scenes, responses, op_cache_dir, weights, fit_fns = m.load_data()
         dataset = GaDataset(
@@ -490,20 +520,17 @@ class Reader:
         obs, preds = expt.predict(loader, agg_fn=np.stack)
         d = dict(obs=obs, preds=preds, scenes=scenes, responses=responses)
         torch.save(d, f)
-        return d
+        return ScatterData(metadata=self._meta, obs=obs, preds=preds, scenes=scenes, responses=responses)
 
     def scatter_plot(self):
         from matplotlib import pyplot as plt
         from scipy.stats import pearsonr
 
         fig, axs = plt.subplots(1, 2, figsize=(11, 5))
-        d_preds = self.predictions
+        d = self.scatter_data
 
         for ax, scenes, ttl in zip(axs, (self.train_scenes, self.test_scenes), ('Train', 'Test')):
-            idx = d_preds['scenes'].scene.isin(scenes)
-            obs = d_preds['obs'][idx, :].reshape(-1)
-            preds = d_preds['preds'][idx, :].reshape(-1)
-
+            obs, preds = d.loc(scene_ids=scenes)
             ax.plot(obs, preds, 'k.')
             stats = pearsonr(obs, preds)
             ax.set_title(f'{ttl} (r = {stats.statistic:.2f})')
@@ -604,3 +631,28 @@ class Readers:
             for m in metas
         ]
         return Readers(readers=readers)
+
+    def test_train_corrs(self):
+        from matplotlib import pyplot as plt
+        from scipy.stats import pearsonr
+
+        fig, ax = plt.subplots(layout='constrained')
+        labels = list(self.labels(tags=None))
+        corrs = dict(test=[], train=[])
+
+        for r in self:
+            sd = r.scatter_data
+            for mode, scenes in zip(('train', 'test'), (r.train_scenes, r.test_scenes)):
+                obs, preds = sd.loc(scene_ids=scenes)
+                corrs[mode].append(pearsonr(obs, preds).statistic)
+
+        x = np.arange(len(labels))
+        width = 0.25
+
+        for i, (mode, rvals) in enumerate(corrs.items()):
+            _rects = ax.barh(x + width * i, rvals, width, label=mode)
+
+        _ = ax.set_xlabel("Pearson's r")
+        _ = ax.set_yticks(x + width / 2, labels)
+        _ = ax.legend(loc='best')
+        return fig, ax
