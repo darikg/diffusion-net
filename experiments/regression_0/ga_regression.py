@@ -25,7 +25,7 @@ import diffusion_net  # noqa
 from diffusion_net.utils import toNP   # noqa
 from diffusion_net.layers import DiffusionNet   # noqa
 from ga_dataset import GaDataset, UseVisibleMode, WeightErrorMode, MeshData, UseColorMode, NormVertMode, \
-    FeatureMode  # noqa
+    FeatureMode, AugmentMode  # noqa
 
 
 def hparam_combinations(hparams: dict[str, Sequence[Any]]) -> Iterator[dict[str, Any]]:
@@ -51,6 +51,7 @@ class Metadata:
     n_faces: int | None = None
     spike_window: tuple[float, float] = (0.07, 0.3)
     weight_error: WeightErrorMode | None = None
+    augment: AugmentMode | None = None
     use_visible: UseVisibleMode | None = None
     use_color: UseColorMode | None = None
     norm_verts: NormVertMode | None = None
@@ -59,23 +60,42 @@ class Metadata:
     def __post_init__(self):
         self.curr_learning_rate = self.learning_rate
 
-    def load_data(self):
+    def load_data(self, weights: WeightErrorMode | None):
         scenes, responses, op_cache_dir, weights, fit_fns = GaDataset.load_data(
             data_file=self.opts.data_file,
             channel=self.channel,
             file_mode=self.opts.mesh_file_mode,
             spike_window=self.spike_window,
-            weight_error=self.weight_error,
+            weight_error=weights or self.weight_error,
             n_faces=self.n_faces,
             features=self.input_features,
         )
         return scenes, responses, op_cache_dir, weights, fit_fns
 
+    def load_dataset(self, weights: WeightErrorMode | None) -> tuple[GaDataset, pd.DataFrame, np.ndarray]:
+        scenes, responses, op_cache_dir, weights, fit_fns = self.load_data(weights=weights)
+        dataset = GaDataset(
+            df=scenes,
+            responses=responses,
+            root_dir=self.opts.data_file.parent,
+            k_eig=self.k_eig,
+            op_cache_dir=op_cache_dir,
+            file_mode=self.opts.mesh_file_mode,
+            weights=weights,
+            use_visible=self.use_visible,
+            use_color=self.use_color,
+            norm_verts=self.norm_verts,
+            features=self.input_features,
+            augment=self.augment,
+        )
+        return dataset, scenes, responses
+
     def load_datasets(
             self,
             train_test_scenes: tuple[Sequence[int], Sequence[int]] | None = None,
+            weight_mode: WeightErrorMode | None = None,
     ) -> Tuple[GaDataset, GaDataset]:
-        scenes, responses, op_cache_dir, weights, fit_fns = self.load_data()
+        scenes, responses, op_cache_dir, weights, fit_fns = self.load_data(weights=weight_mode)
 
         if train_test_scenes:
             train_scenes, test_scenes = train_test_scenes
@@ -101,6 +121,7 @@ class Metadata:
                 use_color=self.use_color,
                 norm_verts=self.norm_verts,
                 features=self.input_features,
+                augment=self.augment,
             )
             for idx in (train_idxs, test_idxs)
         )
@@ -167,6 +188,7 @@ class Options:
     use_visible: tuple[UseVisibleMode | None]
     use_color: tuple[UseColorMode | None]
     norm_verts: tuple[NormVertMode | None]
+    augment: tuple[AugmentMode | None]
     n_blocks: tuple[int, ...]
 
     train_frac: float = 0.95
@@ -332,6 +354,13 @@ class Experiment:
 
 def main():
     logger = logging.getLogger(__name__)
+
+    # augment_modes = (None,)
+    augment_modes = (
+        None,
+        AugmentMode(max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1)
+    )
+
     opts = Options.for_timestamp(
         # data_file=Path(r"D:\resynth\run_51_52\1k_faces\run00051_resynth.hdf"),
         # channel=(0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),
@@ -343,26 +372,26 @@ def main():
         # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),
         # data_file=Path(r"D:\resynth\run_20_21\1k_faces\run00020_resynth.hdf"),
         # channel=(2, 17, 13, 29, 14, 7, 23), # , 3, 28, 8, 12, 18, 31, 27, 4),
-        # data_file=Path(r"D:\resynth\run_09_10\1k_faces\run00009_resynth.hdf"),
-        # channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
 
-        # data_file=Path(r"D:\resynth\run_48_49\resynth_everything3\run00048_resynth.hdf"),
-        # data_file=Path(r"D:\resynth\run_48_49\many_faces\run00048_resynth.hdf"),
-        # data_file=Path(r"D:\resynth\run_48_49\run00048_simp_vis_color\run00048_resynth.hdf"),
-        data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
+        # data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
+        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
+
+        data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
+        channel=((29, 2, 19, 31, 0, 23, 12, 14, 18, 8),),
+
         n_epoch=250,
         mesh_file_mode='simplified',
         train_frac=0.95,
 
-        channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
         weight_error=(None,),
+        augment=augment_modes,
         k_eig=(128,),
         learning_rate=(1e-3,),
         decay_every=(50,),
         decay_rate=(0.5,),
-        # input_features=('xyz', 'hks'),  #
-        input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.33), ('dirac', 0.66), ('dirac', 0.99)),
+        input_features=('xyz',),  #
+        # input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
         use_visible=(None,),  # 'orig', 'shuffled'),
         use_color=(None,),
         norm_verts=(None,),  # ('mean', 'max_rad'), ('bbox', 'area')),
@@ -409,6 +438,70 @@ def main():
     torch.save(metadata, final)
     logger.debug("Saving all metadata to %s", final)
     print(f'file = Path(r"{final}")')
+
+
+# def main_temp():
+#     logger = logging.getLogger(__name__)
+#     opts = Options.for_timestamp(
+#         data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
+#         n_epoch=1,
+#         mesh_file_mode='simplified',
+#         train_frac=0.95,
+#         channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
+#         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
+#         weight_error=(None,),
+#         k_eig=(128,),
+#         learning_rate=(1e-3,),
+#         decay_every=(50,),
+#         decay_rate=(0.5,),
+#         input_features=(('dirac', 0.01),),
+#         use_visible=(None,),  # 'orig', 'shuffled'),
+#         use_color=(None,),
+#         norm_verts=(None,),  # ('mean', 'max_rad'), ('bbox', 'area')),
+#         n_blocks=(4,),  # (3, 4, 5),
+#         dropout=(False,),
+#         n_faces=(500,),
+#     )
+#     opts.init_log()
+#     train_test_scenes = None
+#     metas = list(opts.iter_metadata())
+#
+#     for meta in metas:
+#         train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
+#         train_test_scenes = train_dataset.df.scene.values, test_dataset.df.scene.values
+#         expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+#
+#         train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
+#         test_loader = DataLoader(expt.test_dataset, batch_size=None)
+#
+#         best_loss = np.inf
+#
+#         for epoch in range(opts.n_epoch):
+#             train_loss = expt.train_epoch(train_loader, epoch)
+#             expt.writer.add_scalar(f'loss/train', train_loss, epoch)
+#             test_loss = expt.test(test_loader)
+#             expt.writer.add_scalar(f'loss/test', test_loss, epoch)
+#             print(f'{train_loss=}, {test_loss=}')
+#
+#             if test_loss < best_loss:
+#                 best_loss = test_loss
+#                 # logger.debug('Saving best test loss to %s', meta.model_file)
+#                 torch.save(expt.model.state_dict(), meta.model_file)
+#
+#         last_model_file = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
+#         torch.save(expt.model.state_dict(), last_model_file)
+#
+#     metadata = dict(
+#         opts=opts,
+#         metadata=metas,
+#         train_scenes=train_test_scenes[0],
+#         test_scenes=train_test_scenes[1],
+#     )
+#     final = opts.log_folder / 'opts_and_metadata.pt'
+#     torch.save(metadata, final)
+#     logger.debug("Saving all metadata to %s", final)
+#     print(f'file = Path(r"{final}")')
+
 
 
 if __name__ == '__main__':
@@ -499,21 +592,7 @@ class Reader:
             return ScatterData(
                 metadata=self._meta, obs=d['obs'], preds=d['preds'], scenes=d['scenes'], responses=d['responses'])
 
-        scenes, responses, op_cache_dir, weights, fit_fns = m.load_data()
-        dataset = GaDataset(
-            df=scenes,
-            responses=responses,
-            root_dir=m.opts.data_file.parent,
-            k_eig=m.k_eig,
-            op_cache_dir=op_cache_dir,
-            file_mode=m.opts.mesh_file_mode,
-            weights=None,
-            use_visible=m.use_visible,
-            use_color=m.use_color,
-            norm_verts=m.norm_verts,
-            features=m.input_features,
-        )
-
+        dataset, scenes, responses = self.metadata.load_dataset(weights=None)
         expt = self.experiment()
         expt.model.outputs_at = 'global_mean'
         loader = DataLoader(dataset, batch_size=None, shuffle=False)
@@ -522,7 +601,7 @@ class Reader:
         torch.save(d, f)
         return ScatterData(metadata=self._meta, obs=obs, preds=preds, scenes=scenes, responses=responses)
 
-    def scatter_plot(self):
+    def scatter_plot(self, channel: int | None = None):
         from matplotlib import pyplot as plt
         from scipy.stats import pearsonr
 
@@ -530,7 +609,7 @@ class Reader:
         d = self.scatter_data
 
         for ax, scenes, ttl in zip(axs, (self.train_scenes, self.test_scenes), ('Train', 'Test')):
-            obs, preds = d.loc(scene_ids=scenes)
+            obs, preds = d.loc(scene_ids=scenes, channel=channel)
             ax.plot(obs, preds, 'k.')
             stats = pearsonr(obs, preds)
             ax.set_title(f'{ttl} (r = {stats.statistic:.2f})')

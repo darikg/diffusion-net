@@ -74,6 +74,13 @@ FeatureMode = Literal['xyz', 'hks'] | tuple[Literal['dirac'], float]
 
 
 @dataclass
+class AugmentMode:
+    max_rotate: float | None = None  # radians
+    max_translate: float | None = None  # fraction of bbox
+    max_scale: float | None = None  # 0.1 means +/- 10%
+
+
+@dataclass
 class MeshData:
     verts: torch.Tensor
     faces: torch.Tensor
@@ -101,6 +108,7 @@ class GaDataset(Dataset):
             use_visible: UseVisibleMode | None,
             use_color: UseColorMode | None,
             norm_verts: NormVertMode | None,
+            augment: AugmentMode | None,
             features: FeatureMode,
             op_cache_dir=None,
             weights: np.ndarray | None = None,
@@ -110,6 +118,7 @@ class GaDataset(Dataset):
         self.features = features
         self.responses = responses
         self.weights = weights
+        self.augment = augment
         self.root_dir = root_dir
         self.k_eig = k_eig
         self.op_cache_dir = op_cache_dir
@@ -154,15 +163,40 @@ class GaDataset(Dataset):
             if self.use_color:
                 raise ValueError("Can't get color from ply files")
 
-        verts = torch.tensor(verts).float()
+        verts = torch.tensor(verts)
+        op_cache_dir = self.op_cache_dir
+
+        if self.augment:
+            op_cache_dir = None  # Don't cache randomly augmented stim
+            origin0 = verts.mean(dim=0, keepdims=True)  # noqa
+            verts -= origin0
+
+            if theta_max := self.augment.max_rotate:
+                axis = np.random.normal(size=3)
+                kx, ky, kz = axis / np.linalg.norm(axis)
+                theta = np.random.uniform(-theta_max, theta_max)
+                k = np.array([[0, -kz, ky], [kz, 0, -kx], [-ky, kx, 0]])  # Rodrigues' rotation formula
+                rot = np.eye(3) + np.sin(theta) * k + (1 - np.cos(theta)) * (k @ k)
+                verts = verts @ rot.T
+
+            if max_scale := self.augment.max_scale:
+                verts *= np.random.uniform(1 - max_scale, 1 + max_scale)
+
+            if max_translate := self.augment.max_translate:
+                bbox_extent = torch.max(verts, dim=-2).values - torch.min(verts, dim=-2).values
+                translation = bbox_extent * np.random.uniform(-max_translate, max_translate, 3)
+                verts += translation
+
+            verts += origin0
 
         if self.norm_verts:
             verts = diffusion_net.geometry.normalize_positions(
                 verts, faces=faces, method=self.norm_verts[0], scale_method=self.norm_verts[1])
 
+        verts = verts.float()
         faces = torch.tensor(faces)
         frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(
-            verts, faces, k_eig=self.k_eig, op_cache_dir=self.op_cache_dir)
+            verts, faces, k_eig=self.k_eig, op_cache_dir=op_cache_dir)
 
         if self.use_visible and visible is None:
             raise ValueError("No mesh visibility data!")
@@ -173,7 +207,8 @@ class GaDataset(Dataset):
                 de_file = self.root_dir / self.df.dirac_eigs.iloc[idx]
                 _data = loadmat(str(de_file))
                 evals = torch.tensor(_data['e_vals'].squeeze(axis=1)).float()  # Drop singleton column dim
-                evecs = torch.tensor(_data['e_vecs'][:, 0, :]).float()  # [:, 0, :] takes the w component of the quaternion wxyz
+                evals = evals.clamp(min=0)  # Not sure about this!!!!!!!!!!!
+                evecs = torch.tensor(_data['e_vecs'][:, 0, :]).float()  # take the w component of the quaternion wxyz
 
         return MeshData(
             verts=verts,
