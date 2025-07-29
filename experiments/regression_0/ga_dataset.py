@@ -73,7 +73,7 @@ NormVertMode: TypeAlias = tuple[_NormMethod, _ScaleMethod]
 FeatureMode = Literal['xyz', 'hks'] | tuple[Literal['dirac'], float]
 
 
-@dataclass
+@dataclass(frozen=True)
 class AugmentMode:
     max_rotate: float | None = None  # radians
     max_translate: float | None = None  # fraction of bbox
@@ -251,26 +251,38 @@ class GaDataset(Dataset):
 
         t0, t1 = spike_window
         spikes = cast(DataFrame, read_hdf(data_file, 'spikes'))
-        spk_rates = (
+
+        n_spks_per_trial = (
             spikes.time.between(t0, t1, inclusive='left')
             .groupby(['stim_id', 'task_id', 'channel'])
             .sum()
+            .rename('n_spks_per_trial')
+        )
+
+        responses = _median_spk_rates = (
+            n_spks_per_trial
             .groupby(['stim_id', 'channel'])
             .median()
+            .unstack('channel')
         ) / (t1 - t0)
-        responses = spk_rates.rename('response').unstack('channel')
 
         r0, r1 = responses.min(axis=0), responses.max(axis=0)
-        responses_ = ((responses - r0) / (r1 - r0)).replace((-np.inf, np.inf, np.nan), 0)
-        scenes_ = scenes[scenes.index.isin(responses_.index)].reset_index()
-        responses_ = responses_.loc[(scenes.index, channel)]  # .values  # (n_scenes * n_channels)
+        responses = ((responses - r0) / (r1 - r0)).replace((-np.inf, np.inf, np.nan), 0)
+
+        n_reps = (
+            spikes.index.droplevel(2).unique().to_frame(index=False)
+            .groupby('stim_id')['task_id'].count().rename('n_reps')
+        )
+        responses = responses[(n_reps[responses.index] >= 3) & (responses.index != -1)]
+        scenes = scenes.loc[responses.index]
+        responses = responses.loc[(scenes.index, channel)]  # .values  # (n_scenes * n_channels)
 
         if weight_error:
             if weight_error == 'binned':
-                weights, fit_fns = fit_channel_weights(responses_)
+                weights, fit_fns = fit_channel_weights(responses)
                 weights = weights.values
             elif weight_error == 'response':
-                weights = responses_.values
+                weights = responses.values
                 fit_fns = None
             else:
                 raise ValueError(weight_error)
@@ -278,7 +290,7 @@ class GaDataset(Dataset):
             weights = fit_fns = None
 
         op_cache_dir = data_file.parent / 'op_cache'
-        return scenes_, responses_.values, op_cache_dir, weights, fit_fns
+        return scenes, responses.values, op_cache_dir, weights, fit_fns
 
 
 def _suffixer(*suffices: str) -> Callable[[str], str]:

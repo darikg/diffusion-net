@@ -32,6 +32,10 @@ def hparam_combinations(hparams: dict[str, Sequence[Any]]) -> Iterator[dict[str,
     for vals in product(*hparams.values()):
         yield {k: v for k, v in zip(hparams.keys(), vals)}
 
+
+class Sentinel:
+    pass
+
         
 @dataclass
 class Metadata:
@@ -72,8 +76,16 @@ class Metadata:
         )
         return scenes, responses, op_cache_dir, weights, fit_fns
 
-    def load_dataset(self, weights: WeightErrorMode | None) -> tuple[GaDataset, pd.DataFrame, np.ndarray]:
+    def load_dataset(
+            self,
+            weights: WeightErrorMode | None,
+            augment: AugmentMode | None | Sentinel = Sentinel,
+    ) -> tuple[GaDataset, pd.DataFrame, np.ndarray]:
         scenes, responses, op_cache_dir, weights, fit_fns = self.load_data(weights=weights)
+
+        if augment is Sentinel:
+            augment = self.augment
+
         dataset = GaDataset(
             df=scenes,
             responses=responses,
@@ -86,7 +98,7 @@ class Metadata:
             use_color=self.use_color,
             norm_verts=self.norm_verts,
             features=self.input_features,
-            augment=self.augment,
+            augment=augment,
         )
         return dataset, scenes, responses
 
@@ -94,8 +106,12 @@ class Metadata:
             self,
             train_test_scenes: tuple[Sequence[int], Sequence[int]] | None = None,
             weight_mode: WeightErrorMode | None = None,
+            augment=Sentinel,
     ) -> Tuple[GaDataset, GaDataset]:
         scenes, responses, op_cache_dir, weights, fit_fns = self.load_data(weights=weight_mode)
+
+        if augment is Sentinel:
+            augment = self.augment
 
         if train_test_scenes:
             train_scenes, test_scenes = train_test_scenes
@@ -121,7 +137,7 @@ class Metadata:
                 use_color=self.use_color,
                 norm_verts=self.norm_verts,
                 features=self.input_features,
-                augment=self.augment,
+                augment=augment,
             )
             for idx in (train_idxs, test_idxs)
         )
@@ -350,6 +366,49 @@ class Experiment:
                 preds.append(_preds.cpu().numpy())
 
         return agg_fn(obs), agg_fn(preds)
+
+    def load_mesh_img(
+            self,
+            dataset: GaDataset,
+            stim_idx: int,
+            ch_idx: int,
+            upsample=False,
+            background_color=None,
+    ):
+        import PIL
+        import pyvista as pv
+
+        r = dataset.df.iloc[stim_idx]
+        opts = self.metadata.opts
+        render_img = PIL.Image.open(opts.data_dir / r.render)
+        m_full0 = pv.read(opts.data_dir / r.remeshed)
+        m_simp0 = pv.read(opts.data_dir / r.simplified)
+
+        tr = np.linalg.inv(m_full0.field_data['to_cam_transform'])
+        m_simp1 = m_simp0.transform(tr, inplace=False)
+        m_full1 = m_full0.transform(tr, inplace=False)
+
+        _orig = self.model.outputs_at
+        self.model.outputs_at = 'vertices'
+        _, vert_weights, _ = self.load_item(dataset[stim_idx])
+        m_simp1.point_data['x'] = vert_weights[:, ch_idx].cpu().detach().numpy()
+        self.model.outputs_at = _orig
+
+        if upsample:
+            mesh = m_full1.interpolate(m_simp1)
+        else:
+            mesh = m_simp1
+
+        p = pv.Plotter(window_size=(1024, 1024))
+        if background_color:
+            p.background_color = background_color
+        p.add_mesh(mesh, scalars='x', show_scalar_bar=False)
+        p.camera.position = m_full0.field_data['cam_pos']
+        p.camera.focal_point = m_full0.field_data['cam_focal_point']
+        p.camera.up = m_full0.field_data['cam_view_up']
+        mesh_img = PIL.Image.fromarray(p.screenshot())
+
+        return p, mesh, render_img, mesh_img
 
 
 def main():
@@ -592,7 +651,7 @@ class Reader:
             return ScatterData(
                 metadata=self._meta, obs=d['obs'], preds=d['preds'], scenes=d['scenes'], responses=d['responses'])
 
-        dataset, scenes, responses = self.metadata.load_dataset(weights=None)
+        dataset, scenes, responses = self.metadata.load_dataset(weights=None, augment=None)
         expt = self.experiment()
         expt.model.outputs_at = 'global_mean'
         loader = DataLoader(dataset, batch_size=None, shuffle=False)
