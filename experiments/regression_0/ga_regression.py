@@ -451,7 +451,7 @@ def main():
         data_file=Path(r"D:\resynth\run_38_39\run00038_resynth\run00038_resynth.hdf"),
         channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),),
 
-        n_epoch=2,
+        n_epoch=250,
         mesh_file_mode='simplified',
         train_frac=0.95,
 
