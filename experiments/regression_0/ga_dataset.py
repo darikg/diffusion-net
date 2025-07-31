@@ -101,7 +101,7 @@ class GaDataset(Dataset):
     def __init__(
             self,
             df: DataFrame,
-            responses: np.ndarray,
+            responses: DataFrame,
             root_dir,
             k_eig,
             file_mode: str,
@@ -132,7 +132,7 @@ class GaDataset(Dataset):
         return self.df.shape[0]
 
     def __getitem__(self, idx) -> MeshData:
-        response = self.responses[idx]
+        response = self.responses.iloc[idx].values
         weight = self.weights[idx] if self.weights is not None else None
         path = self.df[self.file_mode].iloc[idx]
         mesh_file = self.root_dir / path
@@ -235,7 +235,8 @@ class GaDataset(Dataset):
             n_faces: int | None,
             features: FeatureMode,
             weight_error: None | Literal['response', 'binned'] = None,
-    ) -> Tuple[DataFrame, np.ndarray, Path, np.ndarray, list[Callable[[Series], Series]] | None]:
+            n_min_reps: float | None = 3,
+    ) -> Tuple[DataFrame, DataFrame, np.ndarray, list[Callable[[Series], Series]] | None]:
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
         scenes = scenes[scenes[file_mode] != ''].copy()
 
@@ -266,16 +267,22 @@ class GaDataset(Dataset):
             .unstack('channel')
         ) / (t1 - t0)
 
-        r0, r1 = responses.min(axis=0), responses.max(axis=0)
-        responses = ((responses - r0) / (r1 - r0)).replace((-np.inf, np.inf, np.nan), 0)
-
         n_reps = (
             spikes.index.droplevel(2).unique().to_frame(index=False)
             .groupby('stim_id')['task_id'].count().rename('n_reps')
         )
-        responses = responses[(n_reps[responses.index] >= 3) & (responses.index != -1)]
-        scenes = scenes.loc[responses.index]
-        responses = responses.loc[(scenes.index, channel)]  # .values  # (n_scenes * n_channels)
+        responses = responses[responses.index != -1]
+        if n_min_reps is not None:
+            responses = responses[n_reps[responses.index] >= n_min_reps]
+
+        scene_ids = np.intersect1d(scenes.index, responses.index)
+        scenes = scenes.loc[scene_ids]
+        responses = responses.loc[(scene_ids, channel)]
+
+        r0, r1 = responses.min(axis=0), responses.max(axis=0)
+        responses = ((responses - r0) / (r1 - r0)).replace((-np.inf, np.inf, np.nan), 0)
+
+        n_reps = n_reps.loc[scene_ids]
 
         if weight_error:
             if weight_error == 'binned':
@@ -289,8 +296,7 @@ class GaDataset(Dataset):
         else:
             weights = fit_fns = None
 
-        op_cache_dir = data_file.parent / 'op_cache'
-        return scenes, responses.values, op_cache_dir, weights, fit_fns
+        return scenes, responses, weights, fit_fns
 
 
 def _suffixer(*suffices: str) -> Callable[[str], str]:

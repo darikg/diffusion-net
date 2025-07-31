@@ -8,7 +8,7 @@ from datetime import datetime
 from functools import cached_property, lru_cache
 from itertools import product
 from pathlib import Path
-from typing import Tuple, Any, Sequence, Iterator, cast
+from typing import Tuple, Any, Sequence, Iterator, cast, Literal
 
 import numpy as np
 import pandas as pd
@@ -65,7 +65,7 @@ class Metadata:
         self.curr_learning_rate = self.learning_rate
 
     def load_data(self, weights: WeightErrorMode | None):
-        scenes, responses, op_cache_dir, weights, fit_fns = GaDataset.load_data(
+        scenes, responses, weights, fit_fns = GaDataset.load_data(
             data_file=self.opts.data_file,
             channel=self.channel,
             file_mode=self.opts.mesh_file_mode,
@@ -74,14 +74,14 @@ class Metadata:
             n_faces=self.n_faces,
             features=self.input_features,
         )
-        return scenes, responses, op_cache_dir, weights, fit_fns
+        return scenes, responses, weights, fit_fns
 
     def load_dataset(
             self,
             weights: WeightErrorMode | None,
             augment: AugmentMode | None | Sentinel = Sentinel,
-    ) -> tuple[GaDataset, pd.DataFrame, np.ndarray]:
-        scenes, responses, op_cache_dir, weights, fit_fns = self.load_data(weights=weights)
+    ) -> GaDataset:
+        scenes, responses, weights, fit_fns = self.load_data(weights=weights)
 
         if augment is Sentinel:
             augment = self.augment
@@ -91,7 +91,7 @@ class Metadata:
             responses=responses,
             root_dir=self.opts.data_file.parent,
             k_eig=self.k_eig,
-            op_cache_dir=op_cache_dir,
+            op_cache_dir=self.opts.data_dir / 'op_cache',
             file_mode=self.opts.mesh_file_mode,
             weights=weights,
             use_visible=self.use_visible,
@@ -100,7 +100,7 @@ class Metadata:
             features=self.input_features,
             augment=augment,
         )
-        return dataset, scenes, responses
+        return dataset
 
     def load_datasets(
             self,
@@ -108,15 +108,15 @@ class Metadata:
             weight_mode: WeightErrorMode | None = None,
             augment=Sentinel,
     ) -> Tuple[GaDataset, GaDataset]:
-        scenes, responses, op_cache_dir, weights, fit_fns = self.load_data(weights=weight_mode)
+        scenes, responses, weights, fit_fns = self.load_data(weights=weight_mode)
 
         if augment is Sentinel:
             augment = self.augment
 
         if train_test_scenes:
             train_scenes, test_scenes = train_test_scenes
-            train_idxs = np.isin(scenes.scene, train_scenes)
-            test_idxs = np.isin(scenes.scene, test_scenes)
+            train_idxs = np.isin(scenes.index, train_scenes)
+            test_idxs = np.isin(scenes.index, test_scenes)
         else:
             n = len(scenes)
             idx = permutation(n)
@@ -130,7 +130,7 @@ class Metadata:
                 responses=responses[idx],
                 root_dir=self.opts.data_file.parent,
                 k_eig=self.k_eig,
-                op_cache_dir=op_cache_dir,
+                op_cache_dir=self.opts.data_dir / 'op_cache',
                 file_mode=self.opts.mesh_file_mode,
                 weights=weights[idx] if weights is not None else None,
                 use_visible=self.use_visible,
@@ -312,7 +312,7 @@ class Experiment:
         preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
         return labels, preds, weights
 
-    def train_epoch(self, loader: DataLoader, epoch: int) -> float:
+    def train_epoch(self, loader: DataLoader, epoch: int) -> tuple[float, float]:
         # Returns mean training loss
         if epoch > 0 and epoch % self.metadata.decay_every == 0:
             self.metadata.curr_learning_rate *= self.metadata.decay_rate
@@ -322,9 +322,12 @@ class Experiment:
         self.model.train()
         self.optimizer.zero_grad()
         losses = []
+        all_obs = []
+        all_preds = []
 
         for data in tqdm(loader, leave=False):
             labels, preds, weights = self.load_item(data)
+
             err = torch.square(preds - labels)
             if weights is not None:
                 err = err * weights
@@ -333,15 +336,22 @@ class Experiment:
             losses.append(toNP(loss))
             loss.backward()
 
+            all_obs.append(labels.detach().cpu().numpy().reshape(-1))
+            all_preds.append(preds.detach().cpu().numpy().reshape(-1))
+
             # Step the optimizer
             self.optimizer.step()
             self.optimizer.zero_grad()
 
-        return np.mean(losses)
+        corr_val = float(np.corrcoef(np.concatenate(all_obs), np.concatenate(all_preds))[0, 1])
+        return np.mean(losses), corr_val
 
     def test(self, loader):
         self.model.eval()
         losses = []
+
+        all_obs = []
+        all_preds = []
 
         with torch.no_grad():
             for data in tqdm(loader, leave=False):
@@ -353,7 +363,11 @@ class Experiment:
                 loss = torch.mean(err)
                 losses.append(toNP(loss))
 
-        return np.mean(losses)
+                all_obs.append(labels.detach().cpu().numpy().reshape(-1))
+                all_preds.append(preds.detach().cpu().numpy().reshape(-1))
+
+        corr_val = float(np.corrcoef(np.concatenate(all_obs), np.concatenate(all_preds))[0, 1])
+        return np.mean(losses), corr_val
 
     def predict(self, loader: DataLoader, agg_fn: Any = np.concatenate):
         self.model.eval()
@@ -414,11 +428,7 @@ class Experiment:
 def main():
     logger = logging.getLogger(__name__)
 
-    # augment_modes = (None,)
-    augment_modes = (
-        None,
-        AugmentMode(max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1)
-    )
+    augment = AugmentMode(max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1)
 
     opts = Options.for_timestamp(
         # data_file=Path(r"D:\resynth\run_51_52\1k_faces\run00051_resynth.hdf"),
@@ -427,27 +437,30 @@ def main():
         # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
         # data_file=Path(r"D:\resynth\run_42_43\1k_faces\run00042_resynth.hdf"),
         # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
-        # data_file=Path(r"D:\resynth\run_38_39\1k_faces\run00038_resynth.hdf"),
-        # channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),
-        # data_file=Path(r"D:\resynth\run_20_21\1k_faces\run00020_resynth.hdf"),
-        # channel=(2, 17, 13, 29, 14, 7, 23), # , 3, 28, 8, 12, 18, 31, 27, 4),
 
+        # LATEST
         # data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
         # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
 
-        data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
-        channel=((29, 2, 19, 31, 0, 23, 12, 14, 18, 8),),
+        # data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
+        # channel=((29, 2, 19, 31, 0, 23, 12, 14, 18, 8),),
 
-        n_epoch=250,
+        # data_file=Path(r"D:\resynth\run_20_21\run00020_resynth\run00020_resynth.hdf"),
+        # channel=((2, 17, 13, 29, 14, 7, 23, 3, 28, 8, 12, 18, 31, 27, 4, 11, 30, 19, 20, 24),),
+
+        data_file=Path(r"D:\resynth\run_38_39\run00038_resynth\run00038_resynth.hdf"),
+        channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),),
+
+        n_epoch=2,
         mesh_file_mode='simplified',
         train_frac=0.95,
 
         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
         weight_error=(None,),
-        augment=augment_modes,
+        augment=(None,),  # (None, augment)
         k_eig=(128,),
-        learning_rate=(1e-3,),
-        decay_every=(50,),
+        learning_rate=(1e-5, 1e-4, 1e-3,),
+        decay_every=(250,),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
         # input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
@@ -462,30 +475,36 @@ def main():
     train_test_scenes = None
     metas = list(opts.iter_metadata())
 
-    for meta in tqdm(metas):
-        train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
-        train_test_scenes = train_dataset.df.scene.values, test_dataset.df.scene.values
-        expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+    try:
+        for meta in tqdm(metas):
+            train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
+            train_test_scenes = train_dataset.df.index.values, test_dataset.df.index.values
+            expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
 
-        train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
-        test_loader = DataLoader(expt.test_dataset, batch_size=None)
+            train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
+            test_loader = DataLoader(expt.test_dataset, batch_size=None)
 
-        best_loss = np.inf
+            best_loss = np.inf
 
-        for epoch in (pbar := tqdm(range(opts.n_epoch))):
-            train_loss = expt.train_epoch(train_loader, epoch)
-            expt.writer.add_scalar(f'loss/train', train_loss, epoch)
-            test_loss = expt.test(test_loader)
-            expt.writer.add_scalar(f'loss/test', test_loss, epoch)
-            pbar.set_postfix(dict(train=train_loss, test=test_loss))
+            for epoch in (pbar := tqdm(range(opts.n_epoch))):
+                train_loss, train_corr = expt.train_epoch(train_loader, epoch)
+                expt.writer.add_scalar(f'loss/train', train_loss, epoch)
+                expt.writer.add_scalar(f'corr/train', train_corr, epoch)
 
-            if test_loss < best_loss:
-                best_loss = test_loss
-                # logger.debug('Saving best test loss to %s', meta.model_file)
-                torch.save(expt.model.state_dict(), meta.model_file)
+                test_loss, test_corr = expt.test(test_loader)
+                expt.writer.add_scalar(f'loss/test', test_loss, epoch)
+                expt.writer.add_scalar(f'corr/test', test_corr, epoch)
+                pbar.set_postfix(dict(train=train_loss, test=test_loss))
 
-        last_model_file = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
-        torch.save(expt.model.state_dict(), last_model_file)
+                if test_loss < best_loss:
+                    best_loss = test_loss
+                    # logger.debug('Saving best test loss to %s', meta.model_file)
+                    torch.save(expt.model.state_dict(), meta.model_file)
+
+            last_model_file = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
+            torch.save(expt.model.state_dict(), last_model_file)
+    except KeyboardInterrupt:
+        pass
 
     metadata = dict(
         opts=opts,
@@ -499,70 +518,6 @@ def main():
     print(f'file = Path(r"{final}")')
 
 
-# def main_temp():
-#     logger = logging.getLogger(__name__)
-#     opts = Options.for_timestamp(
-#         data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
-#         n_epoch=1,
-#         mesh_file_mode='simplified',
-#         train_frac=0.95,
-#         channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
-#         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
-#         weight_error=(None,),
-#         k_eig=(128,),
-#         learning_rate=(1e-3,),
-#         decay_every=(50,),
-#         decay_rate=(0.5,),
-#         input_features=(('dirac', 0.01),),
-#         use_visible=(None,),  # 'orig', 'shuffled'),
-#         use_color=(None,),
-#         norm_verts=(None,),  # ('mean', 'max_rad'), ('bbox', 'area')),
-#         n_blocks=(4,),  # (3, 4, 5),
-#         dropout=(False,),
-#         n_faces=(500,),
-#     )
-#     opts.init_log()
-#     train_test_scenes = None
-#     metas = list(opts.iter_metadata())
-#
-#     for meta in metas:
-#         train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
-#         train_test_scenes = train_dataset.df.scene.values, test_dataset.df.scene.values
-#         expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
-#
-#         train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
-#         test_loader = DataLoader(expt.test_dataset, batch_size=None)
-#
-#         best_loss = np.inf
-#
-#         for epoch in range(opts.n_epoch):
-#             train_loss = expt.train_epoch(train_loader, epoch)
-#             expt.writer.add_scalar(f'loss/train', train_loss, epoch)
-#             test_loss = expt.test(test_loader)
-#             expt.writer.add_scalar(f'loss/test', test_loss, epoch)
-#             print(f'{train_loss=}, {test_loss=}')
-#
-#             if test_loss < best_loss:
-#                 best_loss = test_loss
-#                 # logger.debug('Saving best test loss to %s', meta.model_file)
-#                 torch.save(expt.model.state_dict(), meta.model_file)
-#
-#         last_model_file = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
-#         torch.save(expt.model.state_dict(), last_model_file)
-#
-#     metadata = dict(
-#         opts=opts,
-#         metadata=metas,
-#         train_scenes=train_test_scenes[0],
-#         test_scenes=train_test_scenes[1],
-#     )
-#     final = opts.log_folder / 'opts_and_metadata.pt'
-#     torch.save(metadata, final)
-#     logger.debug("Saving all metadata to %s", final)
-#     print(f'file = Path(r"{final}")')
-
-
-
 if __name__ == '__main__':
     main()
 
@@ -573,7 +528,7 @@ class ScatterData:
     obs: np.ndarray
     preds: np.ndarray
     scenes: pd.DataFrame
-    responses: np.ndarray
+    responses: pd.DataFrame
 
     def loc(
             self,
@@ -583,7 +538,7 @@ class ScatterData:
         obs, preds = self.obs, self.preds
 
         if scene_ids is not None:
-            idx = self.scenes['scene'].isin(scene_ids)
+            idx = self.scenes.index.isin(scene_ids)
             obs, preds = obs[idx, :], preds[idx, :]
 
         if channel is not None:
@@ -651,20 +606,22 @@ class Reader:
             return ScatterData(
                 metadata=self._meta, obs=d['obs'], preds=d['preds'], scenes=d['scenes'], responses=d['responses'])
 
-        dataset, scenes, responses = self.metadata.load_dataset(weights=None, augment=None)
+        dataset = self.metadata.load_dataset(weights=None, augment=None)
         expt = self.experiment()
         expt.model.outputs_at = 'global_mean'
         loader = DataLoader(dataset, batch_size=None, shuffle=False)
         obs, preds = expt.predict(loader, agg_fn=np.stack)
-        d = dict(obs=obs, preds=preds, scenes=scenes, responses=responses)
+        d = dict(obs=obs, preds=preds, scenes=dataset.df, responses=dataset.responses)
         torch.save(d, f)
-        return ScatterData(metadata=self._meta, obs=obs, preds=preds, scenes=scenes, responses=responses)
+        return ScatterData(metadata=self._meta, obs=obs, preds=preds, scenes=dataset.df, responses=dataset.responses)
 
-    def scatter_plot(self, channel: int | None = None):
+    def scatter_plot(self, channel: int | None = None, axs=None):
         from matplotlib import pyplot as plt
         from scipy.stats import pearsonr
 
-        fig, axs = plt.subplots(1, 2, figsize=(11, 5))
+        if axs is None:
+            fig, axs = plt.subplots(1, 2, figsize=(11, 5))
+
         d = self.scatter_data
 
         for ax, scenes, ttl in zip(axs, (self.train_scenes, self.test_scenes), ('Train', 'Test')):
@@ -675,7 +632,20 @@ class Reader:
             ax.set_xlabel('Observed response')
 
         axs[0].set_ylabel('Predicted response')
-        return fig, axs
+        return axs
+
+    def plot_training(self, ax=None, mode: Literal['loss', 'corr'] = 'loss'):
+        from matplotlib import pyplot as plt
+
+        if ax is None:
+            ax = plt.gca()
+
+        ax.plot(*self.scalar(f'{mode}/train'), label='train')
+        ax.plot(*self.scalar(f'{mode}/test'), label='test')
+        if mode == 'loss':
+            ax.set_yscale('log')
+        ax.set_ylabel('MSE') if mode == 'loss' else "Pearson's R"
+        ax.set_xlabel('Epoch')
 
 
 class Readers:
@@ -716,16 +686,22 @@ class Readers:
             yield ', '.join(f'{k}={hparams[k]}' for k in tags)
 
     def scatter_plots(self, tags=None):
-        for r, label in zip(self.readers, self.labels(tags=tags)):
-            fig, axs = r.scatter_plot()
-            fig.suptitle(label)
+        from matplotlib import pyplot as plt
+        n = len(self.readers)
+        fig, axs = plt.subplots(n, 2, figsize=(10, 5 * n), squeeze=False)
 
-    def plot_loss(
+        for r, label, axs_i in zip(self.readers, self.labels(tags=tags), axs):
+            r.scatter_plot(axs=axs_i)
+            axs_i[0].set_ylabel(label)
+            # fig.suptitle(label)
+
+    def plot_training(
             self,
             tags: Sequence[str] | None = None,
             legend: tuple[float, float] | None = (0.9, 0.05),
             sharey=True,
             figsize=(12, 5),
+            mode: Literal['loss', 'corr'] = 'loss',
     ):
         from matplotlib import pyplot as plt
 
@@ -734,12 +710,13 @@ class Readers:
         axs[1].set_title('Test')
 
         for r, label in zip(self.readers, self.labels(tags=tags)):
-            axs[0].plot(*r.scalar('loss/train'), label=label)
-            axs[1].plot(*r.scalar('loss/test'))
+            axs[0].plot(*r.scalar(f'{mode}/train'), label=label)
+            axs[1].plot(*r.scalar(f'{mode}/test'))
 
         for ax in axs:
-            ax.set_yscale('log')
-            ax.set_ylabel('MSE Loss')
+            if mode == 'loss':
+                ax.set_yscale('log')
+            ax.set_ylabel('MSE Loss' if mode == 'loss' else "Pearson's R")
             ax.set_xlabel('Epoch')
 
         if legend not in (False, None):
