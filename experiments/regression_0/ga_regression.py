@@ -459,8 +459,8 @@ def main():
         weight_error=(None,),
         augment=(None,),  # (None, augment)
         k_eig=(128,),
-        learning_rate=(1e-5, 1e-4, 1e-3,),
-        decay_every=(250,),
+        learning_rate=(1e-5, 1e-4),
+        decay_every=(25, 500),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
         # input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
@@ -676,7 +676,7 @@ class Readers:
 
     def labels(self, tags: Sequence[str] | None = None) -> Iterator[str]:
         if tags is None:
-            exclude = ('log_folder', 'model_file', 'metadata_file')
+            exclude = ('log_folder', 'model_file', 'metadata_file', 'curr_learning_rate')
             tags = [
                 k for k, v in self.hparams.items()
                 if (len(set(v)) > 1 and k not in exclude)

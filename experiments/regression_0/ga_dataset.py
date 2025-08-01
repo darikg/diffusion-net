@@ -227,16 +227,7 @@ class GaDataset(Dataset):
         )
 
     @staticmethod
-    def load_data(
-            data_file: Path,
-            channel: int | Sequence[int],
-            file_mode: str,
-            spike_window: tuple[float, float],
-            n_faces: int | None,
-            features: FeatureMode,
-            weight_error: None | Literal['response', 'binned'] = None,
-            n_min_reps: float | None = 3,
-    ) -> Tuple[DataFrame, DataFrame, np.ndarray, list[Callable[[Series], Series]] | None]:
+    def load_scenes(data_file: Path, file_mode: str, n_faces: int | None, features: FeatureMode):
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
         scenes = scenes[scenes[file_mode] != ''].copy()
 
@@ -249,6 +240,21 @@ class GaDataset(Dataset):
                 suffices.append(f'.tau{tau:.3f}')
                 scenes = scenes[scenes['dirac_eigs'] != ''].copy()
                 scenes['dirac_eigs'] = scenes['dirac_eigs'].apply(_suffixer(*suffices))
+        return scenes
+
+    @staticmethod
+    def load_data(
+            data_file: Path,
+            channel: int | Sequence[int],
+            file_mode: str,
+            spike_window: tuple[float, float],
+            n_faces: int | None,
+            features: FeatureMode,
+            weight_error: None | Literal['response', 'binned'] = None,
+            n_min_reps: float | None = 3,
+    ) -> Tuple[DataFrame, DataFrame, np.ndarray, list[Callable[[Series], Series]] | None]:
+
+        scenes = GaDataset.load_scenes(data_file, file_mode=file_mode, n_faces=n_faces, features=features)
 
         t0, t1 = spike_window
         spikes = cast(DataFrame, read_hdf(data_file, 'spikes'))
