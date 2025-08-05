@@ -1,12 +1,5 @@
 import argparse
-from pathlib import Path
-
-import pandas as pd
-import numpy as np
-from torch.utils.data import DataLoader
-
-from ga_dataset import GaDataset
-from ga_regression import Readers
+from ga_regression import *   # Need to import everything for unpickling to work I think?
 
 
 def parse_args():
@@ -62,5 +55,5 @@ if __name__ == "__main__":
     expt = reader.experiment()
     _obs, preds = expt.predict(loader, agg_fn=np.stack)
 
-    df_preds = pd.DataFrame(preds, index=df_scenes.index, columns=df_responses.columns)
+    df_preds = pd.DataFrame(preds, index=df_scenes.index, columns=pd.Index(np.arange(n_channel), name='channel_idx'))
     df_preds.to_hdf(args.outfile, key=args.outkey)
