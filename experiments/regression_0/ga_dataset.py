@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sys
 from dataclasses import dataclass
@@ -95,6 +97,69 @@ class MeshData:
     weight: torch.Tensor | None
     visible: torch.Tensor | None
     color: torch.Tensor | None
+
+
+@dataclass
+class NeurophysData:
+    scenes: pd.DataFrame
+    spikes: pd.DataFrame
+    n_spks_per_trial: pd.DataFrame
+    responses: pd.DataFrame
+
+    @staticmethod
+    def load_scenes(data_file: Path, file_mode: str, n_faces: int | None, features: FeatureMode):
+        scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
+        scenes = scenes[scenes[file_mode] != ''].copy()
+
+        if n_faces is not None:
+            scenes[file_mode] = scenes[file_mode].apply(_suffixer(f'.{n_faces}_faces'))
+
+        match features:
+            case ('dirac', tau):
+                suffices = [f'.{n_faces}_faces'] if n_faces else []
+                suffices.append(f'.tau{tau:.3f}')
+                scenes = scenes[scenes['dirac_eigs'] != ''].copy()
+                scenes['dirac_eigs'] = scenes['dirac_eigs'].apply(_suffixer(*suffices))
+        return scenes
+
+    @staticmethod
+    def load_data(
+            data_file: Path,
+            file_mode: str,
+            spike_window: tuple[float, float],
+            n_faces: int | None,
+            features: FeatureMode,
+            n_min_reps: float | None = 3,
+    ) -> NeurophysData:
+        scenes = NeurophysData.load_scenes(data_file, file_mode=file_mode, n_faces=n_faces, features=features)
+        t0, t1 = spike_window
+        spikes = cast(DataFrame, read_hdf(data_file, 'spikes'))
+
+        n_spks_per_trial = (
+            spikes.time.between(t0, t1, inclusive='left')
+            .groupby(['stim_id', 'task_id', 'channel'])
+            .sum()
+            .rename('n_spks_per_trial')
+        )
+
+        responses = _median_spk_rates = (
+            n_spks_per_trial
+            .groupby(['stim_id', 'channel'])
+            .median()
+            .unstack('channel')
+        ) / (t1 - t0)
+
+        n_reps = (
+            spikes.index.droplevel(2).unique().to_frame(index=False)
+            .groupby('stim_id')['task_id'].count().rename('n_reps')
+        )
+        responses = responses[responses.index != -1]
+        if n_min_reps is not None:
+            responses = responses[n_reps[responses.index] >= n_min_reps]
+
+        return NeurophysData(
+            scenes=scenes, spikes=spikes, n_spks_per_trial=n_spks_per_trial, responses=responses,
+        )
 
 
 class GaDataset(Dataset):
@@ -227,22 +292,6 @@ class GaDataset(Dataset):
         )
 
     @staticmethod
-    def load_scenes(data_file: Path, file_mode: str, n_faces: int | None, features: FeatureMode):
-        scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
-        scenes = scenes[scenes[file_mode] != ''].copy()
-
-        if n_faces is not None:
-            scenes[file_mode] = scenes[file_mode].apply(_suffixer(f'.{n_faces}_faces'))
-
-        match features:
-            case ('dirac', tau):
-                suffices = [f'.{n_faces}_faces'] if n_faces else []
-                suffices.append(f'.tau{tau:.3f}')
-                scenes = scenes[scenes['dirac_eigs'] != ''].copy()
-                scenes['dirac_eigs'] = scenes['dirac_eigs'].apply(_suffixer(*suffices))
-        return scenes
-
-    @staticmethod
     def load_data(
             data_file: Path,
             channel: int | Sequence[int],
@@ -253,42 +302,22 @@ class GaDataset(Dataset):
             weight_error: None | Literal['response', 'binned'] = None,
             n_min_reps: float | None = 3,
     ) -> Tuple[DataFrame, DataFrame, np.ndarray, list[Callable[[Series], Series]] | None]:
-
-        scenes = GaDataset.load_scenes(data_file, file_mode=file_mode, n_faces=n_faces, features=features)
-
-        t0, t1 = spike_window
-        spikes = cast(DataFrame, read_hdf(data_file, 'spikes'))
-
-        n_spks_per_trial = (
-            spikes.time.between(t0, t1, inclusive='left')
-            .groupby(['stim_id', 'task_id', 'channel'])
-            .sum()
-            .rename('n_spks_per_trial')
+        ndata = NeurophysData.load_data(
+            data_file=data_file,
+            file_mode=file_mode,
+            n_faces=n_faces,
+            features=features,
+            spike_window=spike_window,
+            n_min_reps=n_min_reps,
         )
 
-        responses = _median_spk_rates = (
-            n_spks_per_trial
-            .groupby(['stim_id', 'channel'])
-            .median()
-            .unstack('channel')
-        ) / (t1 - t0)
-
-        n_reps = (
-            spikes.index.droplevel(2).unique().to_frame(index=False)
-            .groupby('stim_id')['task_id'].count().rename('n_reps')
-        )
-        responses = responses[responses.index != -1]
-        if n_min_reps is not None:
-            responses = responses[n_reps[responses.index] >= n_min_reps]
-
+        scenes, responses = ndata.scenes, ndata.responses
         scene_ids = np.intersect1d(scenes.index, responses.index)
         scenes = scenes.loc[scene_ids]
         responses = responses.loc[(scene_ids, channel)]
 
         r0, r1 = responses.min(axis=0), responses.max(axis=0)
         responses = ((responses - r0) / (r1 - r0)).replace((-np.inf, np.inf, np.nan), 0)
-
-        n_reps = n_reps.loc[scene_ids]
 
         if weight_error:
             if weight_error == 'binned':

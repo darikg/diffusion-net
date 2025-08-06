@@ -1,4 +1,6 @@
 import argparse
+
+from experiments.regression_0.ga_dataset import NeurophysData
 from ga_regression import *   # Need to import everything for unpickling to work I think?
 
 
@@ -21,7 +23,7 @@ if __name__ == "__main__":
     op_cache = stim_file.parent / 'op_cache'
     op_cache.mkdir(exist_ok=True)
 
-    df_scenes = GaDataset.load_scenes(
+    df_scenes = NeurophysData.load_scenes(
         data_file=stim_file,
         file_mode=meta.opts.mesh_file_mode,
         n_faces=meta.n_faces,
