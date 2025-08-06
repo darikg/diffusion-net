@@ -1,6 +1,6 @@
 import argparse
 
-from experiments.regression_0.ga_dataset import NeurophysData
+from ga_dataset import NeurophysData
 from ga_regression import *   # Need to import everything for unpickling to work I think?
 
 
