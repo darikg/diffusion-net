@@ -450,10 +450,10 @@ def main():
         # data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
         # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
 
-        data_file=Path(r"D:\resynth\run_42_43\1k_faces\run00042_resynth.hdf"),
+        data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
         channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
 
-        n_epoch=250,
+        n_epoch=100,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
@@ -461,8 +461,8 @@ def main():
         weight_error=(None,),
         augment=(None,),  # (None, augment)
         k_eig=(128,),
-        learning_rate=(1e-4,),
-        decay_every=(1, 2, 5, 10),
+        learning_rate=(1e-3, 1e-4,),
+        decay_every=(5, 10, 25),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
         # input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
