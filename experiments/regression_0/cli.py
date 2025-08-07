@@ -1,7 +1,10 @@
 import argparse
 
-from ga_dataset import NeurophysData
+from ga_dataset import *
 from ga_regression import *   # Need to import everything for unpickling to work I think?
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -55,7 +58,22 @@ if __name__ == "__main__":
 
     loader = DataLoader(dataset, shuffle=False, batch_size=None)
     expt = reader.experiment()
-    _obs, preds = expt.predict(loader, agg_fn=np.stack)
 
+    expt.model.eval()
+    preds = []
+    dummy_preds = np.full(len(meta.channel), np.nan)
+
+    with torch.no_grad():
+        for i in range(len(df_scenes)):
+            try:
+                mesh_data = dataset[i]
+            except TypeError as e:
+                logger.error("Error loading scene %s: %s", df_scenes.index[i], str(e))
+                preds_i = dummy_preds
+            else:
+                _, preds_i, _ = expt.load_item(mesh_data)
+            preds.append(preds_i.cpu().numpy())
+
+    preds = np.stack(preds)
     df_preds = pd.DataFrame(preds, index=df_scenes.index, columns=pd.Index(np.arange(n_channel), name='channel_idx'))
     df_preds.to_hdf(args.outfile, key=args.outkey)

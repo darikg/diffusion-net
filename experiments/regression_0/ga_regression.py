@@ -431,9 +431,6 @@ def main():
     augment = AugmentMode(max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1)
 
     opts = Options.for_timestamp(
-        # data_file=Path(r"D:\resynth\run_51_52\1k_faces\run00051_resynth.hdf"),
-        # channel=(0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),
-
         # LATEST
         # data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
         # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
@@ -450,8 +447,11 @@ def main():
         # data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
         # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
 
-        data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
-        channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
+        # data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
+        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
+
+        data_file=Path(r"D:\resynth\run_51_52\1k_faces\run00051_resynth.hdf"),
+        channel=((0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),),
 
         n_epoch=100,
         mesh_file_mode='simplified',
@@ -462,7 +462,7 @@ def main():
         augment=(None,),  # (None, augment)
         k_eig=(128,),
         learning_rate=(1e-3, 1e-4,),
-        decay_every=(5, 10, 25),
+        decay_every=(5, 10, 15, 20),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
         # input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
