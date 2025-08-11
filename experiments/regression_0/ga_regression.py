@@ -432,9 +432,6 @@ def main():
 
     opts = Options.for_timestamp(
         # LATEST
-        # data_file=Path(r"D:\resynth\run_48_49\with_dirac_eigs\run00048_resynth.hdf"),
-        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
-
         # data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
         # channel=((29, 2, 19, 31, 0, 23, 12, 14, 18, 8),),
 
@@ -444,16 +441,16 @@ def main():
         # data_file=Path(r"D:\resynth\run_38_39\run00038_resynth\run00038_resynth.hdf"),
         # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),),
 
-        # data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
-        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
-
         # data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
         # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
 
-        data_file=Path(r"D:\resynth\run_51_52\1k_faces\run00051_resynth.hdf"),
-        channel=((0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),),
+        data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
+        channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
 
-        n_epoch=100,
+        # data_file=Path(r"D:\resynth\run_51_52\run00051_resynth\run00051_resynth.hdf"),
+        # channel=((0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),),
+
+        n_epoch=80,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
@@ -577,7 +574,7 @@ class Reader:
     def scalar(self, tag):
         df = self.scalars
         df = df[df.tag == tag]
-        return df.step, df.value
+        return df.step.values, df.value.values
 
     def format_hparams(self, tags=None):
         df = self.reader.hparams.set_index('tag')
@@ -649,6 +646,11 @@ class Reader:
         ax.set_ylabel('MSE') if mode == 'loss' else "Pearson's R"
         ax.set_xlabel('Epoch')
 
+    def best_test_epoch(self) -> tuple[int, float]:
+        _, loss = self.scalar('loss/test')
+        i = loss.argmin()
+        return i, loss[i]
+
 
 class Readers:
     def __init__(self, readers: list[Reader]):
@@ -676,13 +678,17 @@ class Readers:
         #                ).sort_values('best_loss_train')
         return df
 
+    def tags(
+            self,
+            exclude: Sequence[str] = ('log_folder', 'model_file', 'metadata_file', 'curr_learning_rate'),
+    ) -> list[str]:
+        return [  # type: ignore
+            k for k, v in self.hparams.items()
+            if (len(set(v)) > 1 and k not in exclude)
+        ]
+
     def labels(self, tags: Sequence[str] | None = None) -> Iterator[str]:
-        if tags is None:
-            exclude = ('log_folder', 'model_file', 'metadata_file', 'curr_learning_rate')
-            tags = [
-                k for k, v in self.hparams.items()
-                if (len(set(v)) > 1 and k not in exclude)
-            ]
+        tags = self.tags() if tags is None else tags
 
         for (_, hparams) in self.hparams.loc[:, tags].iterrows():
             yield ', '.join(f'{k}={hparams[k]}' for k in tags)
