@@ -441,11 +441,11 @@ def main():
         # data_file=Path(r"D:\resynth\run_38_39\run00038_resynth\run00038_resynth.hdf"),
         # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),),
 
-        # data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
-        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
+        data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
+        channel=((18, 9, 7, 28, 24, 27, 5, 22, 19, 10, 26, 20, 11),),
 
-        data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
-        channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
+        # data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
+        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
 
         # data_file=Path(r"D:\resynth\run_51_52\run00051_resynth\run00051_resynth.hdf"),
         # channel=((0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),),
