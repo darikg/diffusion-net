@@ -69,10 +69,10 @@ if __name__ == "__main__":
                 mesh_data = dataset[i]
             except (ValueError, TypeError) as e:
                 logger.error("Error loading scene %s: %s", df_scenes.index[i], str(e))
-                preds_i = dummy_preds
+                preds.append(dummy_preds)
             else:
                 _, preds_i, _ = expt.load_item(mesh_data)
-            preds.append(preds_i.cpu().numpy())
+                preds.append(preds_i.cpu().numpy())
 
     preds = np.stack(preds)
     df_preds = pd.DataFrame(preds, index=df_scenes.index, columns=pd.Index(np.arange(n_channel), name='channel_idx'))
