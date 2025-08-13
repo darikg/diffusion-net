@@ -101,6 +101,7 @@ class MeshData:
 
 @dataclass
 class NeurophysData:
+    data_file: Path
     scenes: pd.DataFrame
     spikes: pd.DataFrame
     n_spks_per_trial: pd.DataFrame
@@ -158,7 +159,11 @@ class NeurophysData:
             responses = responses[n_reps[responses.index] >= n_min_reps]
 
         return NeurophysData(
-            scenes=scenes, spikes=spikes, n_spks_per_trial=n_spks_per_trial, responses=responses,
+            data_file=data_file,
+            scenes=scenes,
+            spikes=spikes,
+            n_spks_per_trial=n_spks_per_trial,
+            responses=responses,
         )
 
 

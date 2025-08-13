@@ -67,7 +67,7 @@ if __name__ == "__main__":
         for i in range(len(df_scenes)):
             try:
                 mesh_data = dataset[i]
-            except TypeError as e:
+            except (ValueError, TypeError) as e:
                 logger.error("Error loading scene %s: %s", df_scenes.index[i], str(e))
                 preds_i = dummy_preds
             else:
