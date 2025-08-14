@@ -93,11 +93,42 @@ class MeshData:
     evecs: torch.Tensor
     gradX: torch.Tensor
     gradY: torch.Tensor
-    labels: torch.Tensor
+    labels: torch.Tensor | None
     weight: torch.Tensor | None
     visible: torch.Tensor | None
     color: torch.Tensor | None
 
+    @staticmethod
+    def simple(
+            verts,
+            faces,
+            k_eig: int,
+            labels=None,
+            op_cache_dir=None,
+            weight=None,
+            visible=None,
+            color=None,
+    ) -> MeshData:
+        verts = torch.tensor(verts).float()
+        faces = torch.tensor(faces)
+        frames, mass, L, evals, evecs, gradX, gradY = diffusion_net.geometry.get_operators(
+            verts, faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
+
+        return MeshData(
+            verts=verts,
+            faces=faces,
+            frames=frames,
+            mass=mass,
+            L=L,
+            evals=evals,
+            evecs=evecs,
+            gradX=gradX,
+            gradY=gradY,
+            weight=weight,
+            labels=labels,
+            visible=visible,
+            color=color,
+        )
 
 @dataclass
 class NeurophysData:

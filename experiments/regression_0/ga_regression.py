@@ -285,13 +285,10 @@ class Experiment:
                 weights = torch.Tensor(np.asarray(weights))
             weights = weights.to(self.device)
 
-        if not isinstance((labels := data.labels), torch.Tensor):
-            labels = torch.Tensor(labels)
-
-        labels = labels.to(self.device)
-
-        # if augment_random_rotate:
-        #     verts = diffusion_net.utils.random_rotate_points(verts)
+        labels = data.labels
+        if labels is not None:
+            labels = torch.tensor(labels)
+            labels = labels.to(self.device)
 
         # Construct features
         match self.metadata.input_features:
