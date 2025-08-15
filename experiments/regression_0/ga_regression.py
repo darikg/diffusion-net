@@ -545,6 +545,13 @@ class ScatterData:
 
         return obs, preds
 
+    def by_channel_corr_coeffs(self):
+        from scipy.stats import pearsonr
+        return np.array([
+            pearsonr(o, p).statistic
+            for (o, p) in zip(self.obs.T, self.preds.T)
+        ])
+
 
 class Reader:
     def __init__(self, metadata: Metadata, train_scenes, test_scenes):
