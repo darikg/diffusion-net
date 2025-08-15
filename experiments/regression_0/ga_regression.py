@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import cached_property, lru_cache
 from itertools import product
 from pathlib import Path
-from typing import Tuple, Any, Sequence, Iterator, cast, Literal
+from typing import Tuple, Any, Sequence, Iterator, cast, Literal, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -54,6 +54,7 @@ class Metadata:
     dropout: bool = False
     n_faces: int | None = None
     spike_window: tuple[float, float] = (0.07, 0.3)
+    isolate_channel_idx: int | None = None
     weight_error: WeightErrorMode | None = None
     augment: AugmentMode | None = None
     use_visible: UseVisibleMode | None = None
@@ -110,6 +111,12 @@ class Metadata:
     ) -> Tuple[GaDataset, GaDataset]:
         scenes, responses, weights, fit_fns = self.load_data(weights=weight_mode)
 
+        if (ch_idx := self.isolate_channel_idx) is not None:
+            if weights is None:
+                weights = np.ones(responses.shape)
+            n_ch = len(self.channel)
+            weights[:, np.arange(n_ch) != ch_idx] = 0
+
         if augment is Sentinel:
             augment = self.augment
 
@@ -126,8 +133,8 @@ class Metadata:
 
         train_dataset, test_dataset = (
             GaDataset(
-                df=scenes[idx],
-                responses=responses[idx],
+                df=scenes[idx],  # type: ignore
+                responses=responses[idx],  # type: ignore
                 root_dir=self.opts.data_file.parent,
                 k_eig=self.k_eig,
                 op_cache_dir=self.opts.data_dir / 'op_cache',
@@ -184,12 +191,19 @@ class Metadata:
 
 
 @dataclass
+class TrainedSpec:
+    trained_file: Path
+    idx: int
+
+
+@dataclass
 class Options:
     mesh_file_mode: str
     data_file: Path
     data_dir: Path
     log_folder: Path
     log_file: Path
+    trained: TrainedSpec | None
 
     input_features: tuple[FeatureMode]
     channel: tuple[int | Sequence[int]]
@@ -209,6 +223,7 @@ class Options:
 
     train_frac: float = 0.95
     n_epoch: int = 1
+    iter_channels: bool = False
 
     @staticmethod
     def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
@@ -239,7 +254,12 @@ class Options:
     def iter_metadata(self) -> Iterator[Metadata]:
         hparams = {k: v for k, v in self.__dict__.items() if isinstance(v, tuple)}
         for idx, hp in enumerate(hparam_combinations(hparams)):
-            yield self.metadata(idx=idx, **hp)
+            meta = self.metadata(idx=idx, **hp)
+            if self.iter_channels:
+                for ch_idx in range(len(meta.channel)):
+                    yield replace(meta, isolate_channel_idx=ch_idx)
+            else:
+                yield meta
 
     def init_log(self):
         logging.basicConfig(
@@ -309,7 +329,7 @@ class Experiment:
         preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
         return labels, preds, weights
 
-    def train_epoch(self, loader: DataLoader, epoch: int) -> tuple[float, float]:
+    def train_epoch(self, loader: DataLoader, epoch: int) -> tuple[float, ScatterData]:
         # Returns mean training loss
         if epoch > 0 and epoch % self.metadata.decay_every == 0:
             self.metadata.curr_learning_rate *= self.metadata.decay_rate
@@ -330,18 +350,21 @@ class Experiment:
                 err = err * weights
 
             loss = torch.mean(err)
-            losses.append(toNP(loss))
             loss.backward()
+            losses.append(toNP(loss))
 
-            all_obs.append(labels.detach().cpu().numpy().reshape(-1))
-            all_preds.append(preds.detach().cpu().numpy().reshape(-1))
+            all_obs.append(labels.detach().cpu().numpy())
+            all_preds.append(preds.detach().cpu().numpy())
 
             # Step the optimizer
             self.optimizer.step()
             self.optimizer.zero_grad()
 
-        corr_val = float(np.corrcoef(np.concatenate(all_obs), np.concatenate(all_preds))[0, 1])
-        return np.mean(losses), corr_val
+        sd = ScatterData(
+            obs=np.concatenate(all_obs),
+            preds=np.concatenate(all_preds),
+        )
+        return float(np.mean(losses)), sd
 
     def test(self, loader):
         self.model.eval()
@@ -360,11 +383,14 @@ class Experiment:
                 loss = torch.mean(err)
                 losses.append(toNP(loss))
 
-                all_obs.append(labels.detach().cpu().numpy().reshape(-1))
-                all_preds.append(preds.detach().cpu().numpy().reshape(-1))
+                all_obs.append(labels.detach().cpu().numpy())
+                all_preds.append(preds.detach().cpu().numpy())
 
-        corr_val = float(np.corrcoef(np.concatenate(all_obs), np.concatenate(all_preds))[0, 1])
-        return np.mean(losses), corr_val
+        sd = ScatterData(
+            obs=np.concatenate(all_obs),
+            preds=np.concatenate(all_preds),
+        )
+        return float(np.mean(losses)), sd
 
     def predict(self, loader: DataLoader, agg_fn: Any = np.concatenate):
         self.model.eval()
@@ -391,7 +417,7 @@ class Experiment:
 
         r = dataset.df.iloc[stim_idx]
         opts = self.metadata.opts
-        render_img = PIL.Image.open(opts.data_dir / r.render)
+        render_img = PIL.Image.open(opts.data_dir / r.render)  # noqa
         m_full0 = pv.read(opts.data_dir / r.remeshed)
         m_simp0 = pv.read(opts.data_dir / r.simplified)
 
@@ -410,59 +436,88 @@ class Experiment:
         else:
             mesh = m_simp1
 
-        p = pv.Plotter(window_size=(1024, 1024))
+        p = pv.Plotter(window_size=(1024, 1024))  # noqa
         if background_color:
             p.background_color = background_color
         p.add_mesh(mesh, scalars='x', show_scalar_bar=False)
         p.camera.position = m_full0.field_data['cam_pos']
         p.camera.focal_point = m_full0.field_data['cam_focal_point']
         p.camera.up = m_full0.field_data['cam_view_up']
-        mesh_img = PIL.Image.fromarray(p.screenshot())
+        mesh_img = PIL.Image.fromarray(p.screenshot())  # noqa
 
         return p, mesh, render_img, mesh_img
+
+
+@dataclass
+class DataSpec:
+    data_file: Path
+    channel: tuple[int, ...]
+    trained: TrainedSpec | None
+
+
+def specs():
+    return (
+        DataSpec(
+            data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
+            channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
+            trained=TrainedSpec(Path(r"D:\resynth\run_09_10\run00009_resynth\2025-08-08-12-28-22\opts_and_metadata.pt"), 5),
+        ),
+        DataSpec(
+            data_file=Path(r"D:\resynth\run_20_21\run00020_resynth\run00020_resynth.hdf"),
+            channel=(2, 17, 13, 29, 14, 7, 23, 3, 28, 8, 12, 18, 31, 27, 4, 11, 30, 19, 20, 24),
+            trained=None,
+        ),
+        DataSpec(
+            data_file=Path(r"D:\resynth\run_38_39\run00038_resynth\run00038_resynth.hdf"),
+            channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),
+            trained=None,
+        ),
+        DataSpec(
+            data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
+            channel=(18, 9, 7, 28, 24, 27, 5, 22, 19, 10, 26, 20, 11),
+            trained=None,
+        ),
+        DataSpec(
+            data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
+            channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
+            trained=None,
+        ),
+        DataSpec(
+            data_file=Path(r"D:\resynth\run_51_52\run00051_resynth\run00051_resynth.hdf"),
+            channel=(0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),
+            trained=None,
+        ),
+    )
+
 
 
 def main():
     logger = logging.getLogger(__name__)
 
     augment = AugmentMode(max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1)
+    spec = specs()[0]
 
     opts = Options.for_timestamp(
-        # LATEST
-        # data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
-        # channel=((29, 2, 19, 31, 0, 23, 12, 14, 18, 8),),
-
-        # data_file=Path(r"D:\resynth\run_20_21\run00020_resynth\run00020_resynth.hdf"),
-        # channel=((2, 17, 13, 29, 14, 7, 23, 3, 28, 8, 12, 18, 31, 27, 4, 11, 30, 19, 20, 24),),
-
-        # data_file=Path(r"D:\resynth\run_38_39\run00038_resynth\run00038_resynth.hdf"),
-        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),),
-
-        data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
-        channel=((18, 9, 7, 28, 24, 27, 5, 22, 19, 10, 26, 20, 11),),
-
-        # data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
-        # channel=((14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),),
-
-        # data_file=Path(r"D:\resynth\run_51_52\run00051_resynth\run00051_resynth.hdf"),
-        # channel=((0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),),
-
-        n_epoch=80,
+        n_epoch=5,
         mesh_file_mode='simplified',
         train_frac=0.90,
+
+        data_file=spec.data_file,
+        channel=(spec.channel,),
+        trained=spec.trained,
+        iter_channels=True,
 
         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
         weight_error=(None,),
         augment=(None,),  # (None, augment)
         k_eig=(128,),
-        learning_rate=(1e-3, 1e-4,),
-        decay_every=(5, 10, 15, 20),
+        learning_rate=(1e-4,),
+        decay_every=(10,),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
-        # input_features=('hks', 'xyz', ('dirac', 0.01), ('dirac', 0.25), ('dirac', 0.75), ('dirac', 0.99)),
-        use_visible=(None,),  # 'orig', 'shuffled'),
+        use_visible=(None,),
         use_color=(None,),
-        norm_verts=(None,),  # ('mean', 'max_rad'), ('bbox', 'area')),
+        norm_verts=(None,),
         n_blocks=(4,),  # (3, 4, 5),
         dropout=(False,),
         n_faces=(500,),
@@ -471,36 +526,41 @@ def main():
     train_test_scenes = None
     metas = list(opts.iter_metadata())
 
-    try:
-        for meta in tqdm(metas):
-            train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
-            train_test_scenes = train_dataset.df.index.values, test_dataset.df.index.values
-            expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+    if t := spec.trained:
+        f = torch.load(t.trained_file)['metadata'][t.idx].model_file
+        starting_weights = torch.load(f)
+    else:
+        starting_weights = None
 
-            train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
-            test_loader = DataLoader(expt.test_dataset, batch_size=None)
+    for meta in tqdm(metas):
+        train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
+        train_test_scenes = train_dataset.df.index.values, test_dataset.df.index.values
+        expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
+        if starting_weights:
+            expt.model.load_state_dict(starting_weights)
 
-            best_loss = np.inf
+        train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
+        test_loader = DataLoader(expt.test_dataset, batch_size=None)
 
-            for epoch in (pbar := tqdm(range(opts.n_epoch))):
-                train_loss, train_corr = expt.train_epoch(train_loader, epoch)
-                expt.writer.add_scalar(f'loss/train', train_loss, epoch)
-                expt.writer.add_scalar(f'corr/train', train_corr, epoch)
+        best_loss = np.inf
 
-                test_loss, test_corr = expt.test(test_loader)
-                expt.writer.add_scalar(f'loss/test', test_loss, epoch)
-                expt.writer.add_scalar(f'corr/test', test_corr, epoch)
-                pbar.set_postfix(dict(train=train_loss, test=test_loss))
+        for epoch in (pbar := tqdm(range(opts.n_epoch))):
+            train_loss, train_sd = expt.train_epoch(train_loader, epoch)
+            expt.writer.add_scalar(f'loss/train', train_loss, epoch)
+            expt.writer.add_scalar(f'loss/train_by_ch', train_sd.by_channel_loss(), epoch)
 
-                if test_loss < best_loss:
-                    best_loss = test_loss
-                    # logger.debug('Saving best test loss to %s', meta.model_file)
-                    torch.save(expt.model.state_dict(), meta.model_file)
+            test_loss, test_sd = expt.test(test_loader)
+            expt.writer.add_scalar(f'loss/test', test_loss, epoch)
+            expt.writer.add_scalar(f'loss/test_by_ch', test_sd.by_channel_loss(), epoch)
+            pbar.set_postfix(dict(train=train_loss, test=test_loss))
 
-            last_model_file = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
-            torch.save(expt.model.state_dict(), last_model_file)
-    except KeyboardInterrupt:
-        pass
+            if test_loss < best_loss:
+                best_loss = test_loss
+                # logger.debug('Saving best test loss to %s', meta.model_file)
+                torch.save(expt.model.state_dict(), meta.model_file)
+
+        last_model_file = meta.model_file.with_suffix('.last' + meta.model_file.suffix)
+        torch.save(expt.model.state_dict(), last_model_file)
 
     metadata = dict(
         opts=opts,
@@ -514,17 +574,13 @@ def main():
     print(f'file = Path(r"{final}")')
 
 
-if __name__ == '__main__':
-    main()
-
-
 @dataclass
 class ScatterData:
-    metadata: Metadata
     obs: np.ndarray
     preds: np.ndarray
-    scenes: pd.DataFrame
-    responses: pd.DataFrame
+    metadata: Metadata | None = None
+    scenes: pd.DataFrame | None = None
+    responses: pd.DataFrame | None = None
 
     def loc(
             self,
@@ -551,6 +607,9 @@ class ScatterData:
             pearsonr(o, p).statistic
             for (o, p) in zip(self.obs.T, self.preds.T)
         ])
+
+    def by_channel_loss(self):
+        return ((self.obs - self.preds) ** 2).mean(axis=0)
 
 
 class Reader:
@@ -783,3 +842,7 @@ class Readers:
         _ = ax.set_yticks(x + width / 2, labels)
         _ = ax.legend(loc='best')
         return fig, ax
+
+
+if __name__ == '__main__':
+    main()
