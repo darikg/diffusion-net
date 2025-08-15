@@ -361,8 +361,8 @@ class Experiment:
             self.optimizer.zero_grad()
 
         sd = ScatterData(
-            obs=np.concatenate(all_obs),
-            preds=np.concatenate(all_preds),
+            obs=np.stack(all_obs, axis=0),
+            preds=np.stack(all_preds, axis=0),
         )
         return float(np.mean(losses)), sd
 
@@ -387,8 +387,8 @@ class Experiment:
                 all_preds.append(preds.detach().cpu().numpy())
 
         sd = ScatterData(
-            obs=np.concatenate(all_obs),
-            preds=np.concatenate(all_preds),
+            obs=np.stack(all_obs, axis=0),
+            preds=np.stack(all_preds, axis=0),
         )
         return float(np.mean(losses)), sd
 
@@ -547,11 +547,16 @@ def main():
         for epoch in (pbar := tqdm(range(opts.n_epoch))):
             train_loss, train_sd = expt.train_epoch(train_loader, epoch)
             expt.writer.add_scalar(f'loss/train', train_loss, epoch)
-            expt.writer.add_scalar(f'loss/train_by_ch', train_sd.by_channel_loss(), epoch)
+            expt.writer.add_tensor(f'loss/train_by_ch', torch.tensor(train_sd.by_channel_loss()), epoch)
+            for ch_idx, ch_loss in enumerate(train_sd.by_channel_loss()):
+                expt.writer.add_scalar(f'loss/train_ch{ch_idx}', ch_loss, epoch)
 
             test_loss, test_sd = expt.test(test_loader)
             expt.writer.add_scalar(f'loss/test', test_loss, epoch)
-            expt.writer.add_scalar(f'loss/test_by_ch', test_sd.by_channel_loss(), epoch)
+            expt.writer.add_tensor(f'loss/test_by_ch', torch.tensor(test_sd.by_channel_loss()), epoch)
+            for ch_idx, ch_loss in enumerate(test_sd.by_channel_loss()):
+                expt.writer.add_scalar(f'loss/test_ch{ch_idx}', ch_loss, epoch)
+
             pbar.set_postfix(dict(train=train_loss, test=test_loss))
 
             if test_loss < best_loss:
