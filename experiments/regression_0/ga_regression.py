@@ -189,6 +189,27 @@ class Metadata:
     def as_series(self) -> pd.Series:
         return pd.Series({k: v for k, v in self.__dict__.items() if k not in ('opts',)})
 
+    @staticmethod
+    def stamped(opts: Options, idx: int, mkdir: bool, **kwargs):
+        log_folder = opts.log_folder / f'expt_{idx:03}'
+        if mkdir:
+            log_folder.mkdir(parents=True, exist_ok=True)
+
+        return Metadata(
+            # NB DOUBLE CHECK metadata.restamp
+            opts=opts,
+            log_folder=log_folder,
+            model_file=log_folder / f'diffnet_model.pt',
+            metadata_file=log_folder / f'metadata.pt',
+            **kwargs,
+        )
+
+    def restamp(self, idx: int, mkdir=True):
+        kwargs = self.__dict__.copy()
+        for k in ('opts', 'log_folder', 'model_file', 'metadata_file'):
+            kwargs.pop(k)
+        return Metadata.stamped(opts=self.opts, idx=idx, mkdir=mkdir, **kwargs)
+
 
 @dataclass
 class TrainedSpec:
@@ -241,15 +262,7 @@ class Options:
         )
 
     def metadata(self, idx: int, **kwargs) -> Metadata:
-        log_folder = self.log_folder / f'expt_{idx:03}'
-        log_folder.mkdir(parents=True, exist_ok=True)
-        return Metadata(
-            opts=self,
-            log_folder=log_folder,
-            model_file=log_folder / f'diffnet_model.pt',
-            metadata_file=log_folder / f'metadata.pt',
-            **kwargs,
-        )
+        return Metadata.stamped(opts=self, idx=idx, mkdir=False, **kwargs)
 
     def iter_metadata(self) -> Iterator[Metadata]:
         hparams = {k: v for k, v in self.__dict__.items() if isinstance(v, tuple)}
@@ -452,7 +465,13 @@ class Experiment:
 class DataSpec:
     data_file: Path
     channel: tuple[int, ...]
-    trained: TrainedSpec | None
+    trained: TrainedSpec | None = None
+
+    def all_channels(self) -> tuple[tuple[int, ...]]:
+        return self.channel,
+
+    def split_channels(self) -> tuple[tuple[int], ...]:
+        return tuple((c,) for c in self.channel)
 
 
 def specs():
@@ -460,7 +479,7 @@ def specs():
         DataSpec(
             data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
             channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
-            trained=TrainedSpec(Path(r"D:\resynth\run_09_10\run00009_resynth\2025-08-08-12-28-22\opts_and_metadata.pt"), 5),
+            # trained=TrainedSpec(Path(r"D:\resynth\run_09_10\run00009_resynth\2025-08-08-12-28-22\opts_and_metadata.pt"), 5),
         ),
         DataSpec(
             data_file=Path(r"D:\resynth\run_20_21\run00020_resynth\run00020_resynth.hdf"),
@@ -498,12 +517,12 @@ def main():
     spec = specs()[0]
 
     opts = Options.for_timestamp(
-        n_epoch=5,
+        n_epoch=2,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
         data_file=spec.data_file,
-        channel=(spec.channel,),
+        channel=spec.split_channels(),
         trained=spec.trained,
         iter_channels=True,
 
@@ -524,7 +543,8 @@ def main():
     )
     opts.init_log()
     train_test_scenes = None
-    metas = list(opts.iter_metadata())
+    orig_metas = list(opts.iter_metadata())
+    stamped_metas = []
 
     if t := spec.trained:
         f = torch.load(t.trained_file)['metadata'][t.idx].model_file
@@ -532,7 +552,10 @@ def main():
     else:
         starting_weights = None
 
-    for meta in tqdm(metas):
+    for i, meta in enumerate(tqdm(orig_metas)):
+        meta = meta.restamp(idx=i)
+        stamped_metas.append(meta)
+
         train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
         train_test_scenes = train_dataset.df.index.values, test_dataset.df.index.values
         expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
@@ -548,14 +571,14 @@ def main():
             train_loss, train_sd = expt.train_epoch(train_loader, epoch)
             expt.writer.add_scalar(f'loss/train', train_loss, epoch)
             expt.writer.add_tensor(f'loss/train_by_ch', torch.tensor(train_sd.by_channel_loss()), epoch)
-            for ch_idx, ch_loss in enumerate(train_sd.by_channel_loss()):
-                expt.writer.add_scalar(f'loss/train_ch{ch_idx}', ch_loss, epoch)
+            # for ch_idx, ch_loss in enumerate(train_sd.by_channel_loss()):
+            #     expt.writer.add_scalar(f'loss/train_ch{ch_idx}', ch_loss, epoch)
 
             test_loss, test_sd = expt.test(test_loader)
             expt.writer.add_scalar(f'loss/test', test_loss, epoch)
             expt.writer.add_tensor(f'loss/test_by_ch', torch.tensor(test_sd.by_channel_loss()), epoch)
-            for ch_idx, ch_loss in enumerate(test_sd.by_channel_loss()):
-                expt.writer.add_scalar(f'loss/test_ch{ch_idx}', ch_loss, epoch)
+            # for ch_idx, ch_loss in enumerate(test_sd.by_channel_loss()):
+            #     expt.writer.add_scalar(f'loss/test_ch{ch_idx}', ch_loss, epoch)
 
             pbar.set_postfix(dict(train=train_loss, test=test_loss))
 
@@ -569,7 +592,7 @@ def main():
 
     metadata = dict(
         opts=opts,
-        metadata=metas,
+        metadata=stamped_metas,
         train_scenes=train_test_scenes[0],
         test_scenes=train_test_scenes[1],
     )
@@ -584,12 +607,12 @@ class ScatterData:
     obs: np.ndarray
     preds: np.ndarray
     metadata: Metadata | None = None
-    scenes: pd.DataFrame | None = None
-    responses: pd.DataFrame | None = None
+    scenes: pd.DataFrame | None = None  # noqa
+    responses: pd.DataFrame | None = None  # noqa
 
     def loc(
             self,
-            scene_ids: np.ndarray | Sequence[int] | None,
+            scene_ids: np.ndarray | Sequence[int] | None,  # noqa
             channel: int | None = None,
     ):
         obs, preds = self.obs, self.preds
@@ -605,6 +628,10 @@ class ScatterData:
             obs, preds = obs.reshape(-1), preds.reshape(-1)
 
         return obs, preds
+
+    def for_scenes(self, scene_ids):
+        idx = self.scenes.index.isin(scene_ids)
+        return self.obs[idx, :], self.preds[idx, :]
 
     def by_channel_corr_coeffs(self):
         from scipy.stats import pearsonr
@@ -639,10 +666,22 @@ class Reader:
         return self.reader.scalars
 
     @lru_cache
-    def scalar(self, tag):
+    def scalar(self, tag: str) -> tuple[np.ndarray, np.ndarray]:
         df = self.scalars
         df = df[df.tag == tag]
-        return df.step.values, df.value.values
+        return df.step.values, df.value.values  # noqa
+
+    @cached_property
+    def tensors(self):
+        return self.reader.tensors
+
+    @lru_cache
+    def tensor(self, tag: str) -> tuple[np.ndarray, np.ndarray]:
+        df = self.tensors
+        df = df[df.tag == tag]
+        epoch = df.step.values
+        values = np.stack(df.value)
+        return epoch, values  # noqa
 
     def format_hparams(self, tags=None):
         df = self.reader.hparams.set_index('tag')
@@ -682,6 +721,24 @@ class Reader:
         torch.save(d, f)
         return ScatterData(metadata=self._meta, obs=obs, preds=preds, scenes=dataset.df, responses=dataset.responses)
 
+    def scatter_plots(self):
+        from matplotlib import pyplot as plt
+
+        n_ch = len(self.metadata.channel)
+        n = int(np.sqrt(n_ch))
+        fig, axs = plt.subplots(n, n, sharex=True, sharey=True, figsize=(n * 5, n * 5))
+        axs = axs.reshape(-1)
+        sd = self.scatter_data
+
+        for i, ax in enumerate(axs[:n_ch]):
+            ax.plot(sd.obs[:, i], sd.preds[:, i], 'k.')
+            ax.set_title(f'Ch {i}')
+            ax.set_xlim([0, 1])
+            ax.set_ylim([0, 1])
+
+        for ax in axs[n_ch:]:
+            ax.set_visible(False)
+
     def scatter_plot(self, channel: int | None = None, axs=None):
         from matplotlib import pyplot as plt
         from scipy.stats import pearsonr
@@ -714,10 +771,44 @@ class Reader:
         ax.set_ylabel('MSE') if mode == 'loss' else "Pearson's R"
         ax.set_xlabel('Epoch')
 
+    def plot_channel_training(self, figsize=(12, 5), sharey=True, legend=(.92, .35)):
+        from matplotlib import pyplot as plt
+
+        ch_idx = self.metadata.isolate_channel_idx
+        assert ch_idx is not None
+
+        fig, axs = plt.subplots(1, 2, figsize=figsize, sharey=sharey)  # noqa
+
+        axs[0].set_title('Train')
+        hs = axs[0].plot(*self.tensor('loss/train_by_ch'))
+        for i, h in enumerate(hs):
+            h.set_label(f'Ch {i}')
+            h.set_linewidth(2 if i == ch_idx else 0.5)
+
+        axs[0].set_xlabel('Epoch')
+        axs[0].set_ylabel('MSE Loss')
+
+
+        axs[1].set_title('Test')
+        hs = axs[1].plot(*self.tensor('loss/test_by_ch'))
+        for i, h in enumerate(hs):
+            h.set_linewidth(2 if i == ch_idx else 0.5)
+
+        axs[1].set_xlabel('Epoch')
+        plt.suptitle(f'Training channel {ch_idx}')
+
+        if legend not in (False, None):
+            if legend is True:
+                fig.legend()
+            else:
+                fig.legend(loc=legend)
+
+        return fig, axs
+
     def best_test_epoch(self) -> tuple[int, float]:
         _, loss = self.scalar('loss/test')
         i = loss.argmin()
-        return i, loss[i]
+        return i, loss[i]  # noqa
 
 
 class Readers:
@@ -769,7 +860,9 @@ class Readers:
         for r, label, axs_i in zip(self.readers, self.labels(tags=tags), axs):
             r.scatter_plot(axs=axs_i)
             axs_i[0].set_ylabel(label)
-            # fig.suptitle(label)
+
+        fig.supxlabel('Observed')
+        fig.subylabel('Predicted')
 
     def plot_training(
             self,

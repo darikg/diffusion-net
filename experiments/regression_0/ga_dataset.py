@@ -135,11 +135,11 @@ class NeurophysData:
     data_file: Path
     scenes: pd.DataFrame
     spikes: pd.DataFrame
-    n_spks_per_trial: pd.DataFrame
+    n_spks_per_trial: pd.Series
     responses: pd.DataFrame
 
     @staticmethod
-    def load_scenes(data_file: Path, file_mode: str, n_faces: int | None, features: FeatureMode):
+    def load_scenes(data_file: Path, file_mode: str, n_faces: int | None, features: FeatureMode | None):
         scenes = cast(DataFrame, read_hdf(data_file, 'scenes'))
         scenes = scenes[scenes[file_mode] != ''].copy()
 
@@ -160,7 +160,7 @@ class NeurophysData:
             file_mode: str,
             spike_window: tuple[float, float],
             n_faces: int | None,
-            features: FeatureMode,
+            features: FeatureMode | None,
             n_min_reps: float | None = 3,
     ) -> NeurophysData:
         scenes = NeurophysData.load_scenes(data_file, file_mode=file_mode, n_faces=n_faces, features=features)
