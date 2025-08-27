@@ -344,9 +344,17 @@ class ProbeMesh:
             relative_alpha=100,
             relative_offset=600,
             simplify_n_faces: int | None = None,
+            verbose=False,
     ):
         import pymeshfix  # noqa
         from seagullmesh import Mesh3
+
+        if verbose:
+            def _log(x):
+                print(x)
+        else:
+            def _log(x):
+                pass
 
         mesh_file = Path(mesh_file)
         cache_file = mesh_file.with_suffix('.cache' + mesh_file.suffix)
@@ -357,7 +365,7 @@ class ProbeMesh:
             pv_mesh = pv.read(mesh_file).triangulate().clean()
 
             if repair:
-                print('pymeshfix')
+                _log('pymeshfix')
                 meshfix = pymeshfix.MeshFix(pv_mesh.points, pv_mesh.regular_faces)
                 meshfix.repair()
                 pv_mesh = meshfix.mesh
@@ -365,15 +373,15 @@ class ProbeMesh:
             sm_mesh = Mesh3.from_pyvista(pv_mesh)
 
             if fill_holes:
-                print('fill holes')
+                _log('fill holes')
                 sm_mesh.triangulate_holes(sm_mesh.extract_boundary_cycles())
 
             if wrap:
-                print('alpha wrapping')
+                _log('alpha wrapping')
                 sm_mesh = sm_mesh.alpha_wrapping(relative_alpha=relative_alpha, relative_offset=relative_offset)
 
             if simplify_n_faces:
-                print('edge collapse')
+                _log('edge collapse')
                 sm_mesh.edge_collapse('face', simplify_n_faces)
 
             probe_mesh = sm_mesh.to_pyvista()
