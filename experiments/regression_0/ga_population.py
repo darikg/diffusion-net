@@ -236,8 +236,7 @@ class SourceModels:
         return SourceModels(models)
 
 @contextmanager
-def maybe_plotter(p=None, **kwargs) -> Iterator:
-    import pyvista as pv
+def maybe_plotter(p: pv.Plotter | None = None, **kwargs) -> Iterator[pv.Plotter]:
     show = p is None
     p = p or pv.Plotter(**kwargs)
     yield p
@@ -245,10 +244,10 @@ def maybe_plotter(p=None, **kwargs) -> Iterator:
         p.show()
 
 def iter_subplots(
-        plotter=None,
+        plotter: pv.Plotter | None = None,
         link_views=True,
         **kwargs
-) -> Iterator[Tuple[Tuple[int, int], Plotter]]:
+) -> Iterator[Tuple[Tuple[int, int], pv.Plotter]]:
     with maybe_plotter(plotter, **kwargs) as p:
         nr, nc = p.shape
         for i in range(nr):
@@ -353,5 +352,22 @@ class ProbeMesh:
         return ProbeMesh(
             mesh=probe_mesh, cam_pos=np.array(cam_pos), tgt_pos=np.array(tgt_pos), corpus_index=corpus_index)
 
+    def plot_weights(
+            self,
+            weights: np.ndarray,
+            shape: tuple[int, int],
+            plotter: pv.Plotter | None = None,
+            link_views=True,
+            render=True,
+    ):
+        with maybe_plotter(plotter) as plotter:
+            plotters = iter_subplots(plotter, shape=shape, link_views=link_views)
+            for i, ((_r, _c), p) in enumerate(plotters):
+                p.add_mesh(self.mesh.copy(), scalars=weights[:, i])
+                p.camera = self.camera
 
+            if render:
+                return PIL.Image.fromarray(plotter.screenshot())  # noqa
+            else:
+                return plotter
 
