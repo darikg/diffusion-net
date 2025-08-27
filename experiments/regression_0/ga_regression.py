@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import cached_property, lru_cache
@@ -16,6 +17,7 @@ import torch
 from numpy.random import permutation
 from pandas import Series
 from tbparse import SummaryReader
+from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -61,6 +63,7 @@ class Metadata:
     use_color: UseColorMode | None = None
     norm_verts: NormVertMode | None = None
     curr_learning_rate: float | None = None
+    ultimate_linear: bool = False
 
     def __post_init__(self):
         self.curr_learning_rate = self.learning_rate
@@ -158,12 +161,17 @@ class Metadata:
         if self.use_color:
             C_in += 4
 
+        if self.ultimate_linear:
+            last_activation = nn.Linear(in_features=n_channels_out, out_features=n_channels_out)
+        else:
+            last_activation = None
+
         return DiffusionNet(
             C_in=C_in,
             C_out=n_channels_out,
             C_width=64,
             N_block=self.n_blocks,
-            last_activation=None,
+            last_activation=last_activation,
             outputs_at='global_mean',
             dropout=self.dropout,
         )
@@ -241,6 +249,7 @@ class Options:
     norm_verts: tuple[NormVertMode | None]
     augment: tuple[AugmentMode | None]
     n_blocks: tuple[int, ...]
+    ultimate_linear: tuple[bool, ...]
 
     train_frac: float = 0.95
     n_epoch: int = 1
@@ -470,43 +479,51 @@ class DataSpec:
     def all_channels(self) -> tuple[tuple[int, ...]]:
         return self.channel,
 
-    def split_channels(self) -> tuple[tuple[int], ...]:
-        return tuple((c,) for c in self.channel)
+    def split_channels(self, include_all_channels: bool, channel_subset=None) -> tuple[tuple[int], ...]:
+        channels = self.channel
+        if channel_subset is not None:
+            channels = tuple(np.array(channels)[channel_subset])
+
+        split = tuple((c,) for c in channels)
+        if include_all_channels:
+            return split + (channels,)
+        else:
+            return split
 
 
 def specs():
-    return (
-        DataSpec(
+    return {
+        9: DataSpec(
             data_file=Path(r"D:\resynth\run_09_10\run00009_resynth\run00009_resynth.hdf"),
             channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
             # trained=TrainedSpec(Path(r"D:\resynth\run_09_10\run00009_resynth\2025-08-08-12-28-22\opts_and_metadata.pt"), 5),
         ),
-        DataSpec(
+        20: DataSpec(
             data_file=Path(r"D:\resynth\run_20_21\run00020_resynth\run00020_resynth.hdf"),
             channel=(2, 17, 13, 29, 14, 7, 23, 3, 28, 8, 12, 18, 31, 27, 4, 11, 30, 19, 20, 24),
             trained=None,
         ),
-        DataSpec(
+        38: DataSpec(
             data_file=Path(r"D:\resynth\run_38_39\run00038_resynth\run00038_resynth.hdf"),
             channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),
             trained=None,
         ),
-        DataSpec(
+        42: DataSpec(
             data_file=Path(r"D:\resynth\run_42_43\run00042_resynth\run00042_resynth.hdf"),
             channel=(18, 9, 7, 28, 24, 27, 5, 22, 19, 10, 26, 20, 11),
             trained=None,
         ),
-        DataSpec(
+        48: DataSpec(
             data_file=Path(r"D:\resynth\run_48_49\run00048_resynth\run00048_resynth.hdf"),
             channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
             trained=None,
         ),
-        DataSpec(
+        51: DataSpec(
             data_file=Path(r"D:\resynth\run_51_52\run00051_resynth\run00051_resynth.hdf"),
             channel=(0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),
             trained=None,
         ),
-    )
+    }
 
 
 
@@ -514,17 +531,19 @@ def main():
     logger = logging.getLogger(__name__)
 
     augment = AugmentMode(max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1)
-    spec = specs()[0]
+    spec = specs()[51]
 
     opts = Options.for_timestamp(
-        n_epoch=2,
+        n_epoch=75,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
         data_file=spec.data_file,
-        channel=spec.split_channels(),
-        trained=spec.trained,
-        iter_channels=True,
+        channel=spec.split_channels(include_all_channels=True, channel_subset=[0, 4, 5, 6, 7, 10]),      # !!!!!
+        # channel = spec.all_channels(),
+        trained=spec.trained,               # !!!!!
+        iter_channels=False,                # !!!!!
+        ultimate_linear=(False, True),
 
         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
         weight_error=(None,),
@@ -570,15 +589,13 @@ def main():
         for epoch in (pbar := tqdm(range(opts.n_epoch))):
             train_loss, train_sd = expt.train_epoch(train_loader, epoch)
             expt.writer.add_scalar(f'loss/train', train_loss, epoch)
-            expt.writer.add_tensor(f'loss/train_by_ch', torch.tensor(train_sd.by_channel_loss()), epoch)
-            # for ch_idx, ch_loss in enumerate(train_sd.by_channel_loss()):
-            #     expt.writer.add_scalar(f'loss/train_ch{ch_idx}', ch_loss, epoch)
+            train_ch_loss = torch.tensor(train_sd.by_channel_loss())
+            expt.writer.add_tensor(f'loss/train_by_ch', train_ch_loss, epoch)
 
             test_loss, test_sd = expt.test(test_loader)
             expt.writer.add_scalar(f'loss/test', test_loss, epoch)
-            expt.writer.add_tensor(f'loss/test_by_ch', torch.tensor(test_sd.by_channel_loss()), epoch)
-            # for ch_idx, ch_loss in enumerate(test_sd.by_channel_loss()):
-            #     expt.writer.add_scalar(f'loss/test_ch{ch_idx}', ch_loss, epoch)
+            test_ch_loss = torch.tensor(test_sd.by_channel_loss())
+            expt.writer.add_tensor(f'loss/test_by_ch', test_ch_loss, epoch)
 
             pbar.set_postfix(dict(train=train_loss, test=test_loss))
 
@@ -640,8 +657,13 @@ class ScatterData:
             for (o, p) in zip(self.obs.T, self.preds.T)
         ])
 
-    def by_channel_loss(self):
-        return ((self.obs - self.preds) ** 2).mean(axis=0)
+    def by_channel_loss(self, scene_ids=None):
+        obs, preds = self.obs, self.preds
+        if scene_ids is not None:
+            idx = self.scenes.index.isin(scene_ids)
+            obs, preds = obs[idx, :], preds[idx, :]
+
+        return ((obs - preds) ** 2).mean(axis=0)
 
 
 class Reader:
@@ -694,32 +716,45 @@ class Reader:
     def metadata(self) -> Metadata:
         return self._meta
 
-    def experiment(self):
+    def experiment(self, last_trained: bool = False, outputs_at: str | None = None):
         if self._experiment:
             return self._experiment
         train_ds, test_ds = self._meta.load_datasets(train_test_scenes=(self.train_scenes, self.test_scenes))
         expt = self._experiment = self.metadata.experiment(train_dataset=train_ds, test_dataset=test_ds, )
-        expt.model.load_state_dict(torch.load(self._meta.model_file))
+        f = self._meta.model_file
+        if last_trained:
+            f = f.with_suffix('.last' + f.suffix)
+
+        expt.model.load_state_dict(torch.load(f))
+        if outputs_at:
+            expt.model.outputs_at = outputs_at
+
         return expt
 
-    @cached_property
-    def scatter_data(self) -> ScatterData:
+    def load_scatter_data(self, last_trained: bool = False) -> ScatterData:
         m = self._meta
 
         f = m.log_folder / 'predictions.pt'
+        if last_trained:
+            f = f.with_suffix('.last' + f.suffix)
+
         if f.exists():
             d = torch.load(f)
             return ScatterData(
                 metadata=self._meta, obs=d['obs'], preds=d['preds'], scenes=d['scenes'], responses=d['responses'])
 
         dataset = self.metadata.load_dataset(weights=None, augment=None)
-        expt = self.experiment()
+        expt = self.experiment(last_trained=last_trained)
         expt.model.outputs_at = 'global_mean'
         loader = DataLoader(dataset, batch_size=None, shuffle=False)
         obs, preds = expt.predict(loader, agg_fn=np.stack)
         d = dict(obs=obs, preds=preds, scenes=dataset.df, responses=dataset.responses)
         torch.save(d, f)
-        return ScatterData(metadata=self._meta, obs=obs, preds=preds, scenes=dataset.df, responses=dataset.responses)
+        return ScatterData(metadata=self._meta, obs=obs, preds=preds, scenes=dataset.df, responses=dataset.responses)  # noqa
+
+    @cached_property
+    def scatter_data(self) -> ScatterData:
+        return self.load_scatter_data(last_trained=False)
 
     def scatter_plots(self):
         from matplotlib import pyplot as plt
@@ -739,14 +774,14 @@ class Reader:
         for ax in axs[n_ch:]:
             ax.set_visible(False)
 
-    def scatter_plot(self, channel: int | None = None, axs=None):
+    def scatter_plot(self, channel: int | None = None, axs=None, last_trained: bool = False):
         from matplotlib import pyplot as plt
         from scipy.stats import pearsonr
 
         if axs is None:
             fig, axs = plt.subplots(1, 2, figsize=(11, 5))
 
-        d = self.scatter_data
+        d = self.load_scatter_data(last_trained=last_trained)
 
         for ax, scenes, ttl in zip(axs, (self.train_scenes, self.test_scenes), ('Train', 'Test')):
             obs, preds = d.loc(scene_ids=scenes, channel=channel)
@@ -857,12 +892,14 @@ class Readers:
         n = len(self.readers)
         fig, axs = plt.subplots(n, 2, figsize=(10, 5 * n), squeeze=False)
 
-        for r, label, axs_i in zip(self.readers, self.labels(tags=tags), axs):
+        for i, (r, label, axs_i) in enumerate(zip(self.readers, self.labels(tags=tags), axs)):
             r.scatter_plot(axs=axs_i)
-            axs_i[0].set_ylabel(label)
+            axs_i[0].set_ylabel(f'{i}) {label})')
 
         fig.supxlabel('Observed')
-        fig.subylabel('Predicted')
+        fig.supylabel('Predicted')
+
+        fig.tight_layout()
 
     def plot_training(
             self,

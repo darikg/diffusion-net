@@ -109,7 +109,10 @@ class SourceModels:
         yield from self.models
 
     def __getitem__(self, i):
-        return self.models[i]
+        if isinstance(i, int):
+            return self.models[i]
+        else:
+            return SourceModels(list(np.array(self.models)[i]))
 
     def __len__(self):
         return len(self.models)
@@ -232,18 +235,49 @@ class SourceModels:
         ]
         return SourceModels(models)
 
+@contextmanager
+def maybe_plotter(p=None, **kwargs) -> Iterator:
+    import pyvista as pv
+    show = p is None
+    p = p or pv.Plotter(**kwargs)
+    yield p
+    if show:
+        p.show()
+
+def iter_subplots(
+        plotter=None,
+        link_views=True,
+        **kwargs
+) -> Iterator[Tuple[Tuple[int, int], Plotter]]:
+    with maybe_plotter(plotter, **kwargs) as p:
+        nr, nc = p.shape
+        for i in range(nr):
+            for j in range(nc):
+                p.subplot(i, j)
+                yield (i, j), p
+
+        if link_views:
+            p.link_views()
+
 
 class ProbeMesh:
-    def __init__(self, mesh: pv.PolyData, cam_pos: np.ndarray, cam_tgt: np.ndarray):
+    def __init__(
+            self,
+            mesh: pv.PolyData,
+            cam_pos: np.ndarray,
+            tgt_pos: np.ndarray,
+            corpus_index: str | None = None,
+    ):
         self.mesh = mesh
-        self.cam_pos = np.array(cam_pos)
-        self.cam_tgt = np.array(cam_tgt)
+        self.cam_pos = cam_pos
+        self.tgt_pos = tgt_pos
+        self.corpus_index = corpus_index
 
     @property
     def camera(self) -> pv.Camera:
         cam = pv.Camera()
         cam.position = self.cam_pos
-        cam.focal_point = self.cam_tgt
+        cam.focal_point = self.tgt_pos
         cam.SetViewUp(0, 0, 1)
         return cam
 
@@ -267,13 +301,57 @@ class ProbeMesh:
         if frac == 1:
             return self
 
-        cam_vec = self.cam_tgt - self.cam_pos
+        cam_vec = self.tgt_pos - self.cam_pos
         # dist = np.linalg.norm(cam_vec)
 
-        mesh = self.mesh.scale(frac, point=self.cam_tgt)
-        cam_pos = self.cam_tgt - frac * cam_vec
-        return ProbeMesh(mesh=mesh, cam_pos=cam_pos, cam_tgt=self.cam_tgt)
+        mesh = self.mesh.scale(frac, point=self.tgt_pos)
+        cam_pos = self.tgt_pos - frac * cam_vec
+        return ProbeMesh(mesh=mesh, cam_pos=cam_pos, tgt_pos=self.tgt_pos)
 
     def mesh_data(self, k_eig: int = 128, op_cache_dir=None):
         mesh = self.mesh_to_camera()
         return MeshData.simple(verts=mesh.points, faces=mesh.regular_faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
+
+    @staticmethod
+    def load(
+            mesh_file: str | Path,
+            cam_pos: tuple[float, float, float],
+            tgt_pos: tuple[float, float, float],
+            repair=True,
+            fill_holes=False,
+            cache=True,
+            recache=False,
+            corpus_index: str | None = None,
+    ):
+        import pymeshfix  # noqa
+        from seagullmesh import Mesh3
+
+        mesh_file = Path(mesh_file)
+        cache_file = mesh_file.with_suffix(mesh_file.suffix + '.cache')
+
+        if cache and not recache and cache_file.exists():
+            probe_mesh = pv.read(cache_file)
+        else:
+            pv_mesh = pv.read(mesh_file).triangulate().clean()
+
+            if repair:
+                meshfix = pymeshfix.MeshFix(pv_mesh.points, pv_mesh.regular_faces)
+                meshfix.repair()
+                pv_mesh = meshfix.mesh
+
+            sm_mesh = Mesh3.from_pyvista(pv_mesh)
+
+            if fill_holes:
+                sm_mesh.triangulate_holes(sm_mesh.extract_boundary_cycles())
+
+            sm_wrapped = sm_mesh.alpha_wrapping(relative_alpha=100, relative_offset=600)
+            probe_mesh = sm_wrapped.to_pyvista()
+
+            if cache:
+                probe_mesh.save(cache_file)
+
+        return ProbeMesh(
+            mesh=probe_mesh, cam_pos=np.array(cam_pos), tgt_pos=np.array(tgt_pos), corpus_index=corpus_index)
+
+
+
