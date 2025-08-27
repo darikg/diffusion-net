@@ -235,6 +235,25 @@ class SourceModels:
         ]
         return SourceModels(models)
 
+    def get_weights(self, probe_meshes: list[ProbeMesh], expt_kwargs=None) -> list[VertexWeights]:
+        expt_kwargs = expt_kwargs or dict()
+
+        n_model, n_probe = len(self), len(probe_meshes)
+        weights = np.empty((n_probe, n_model), dtype='O')
+
+        for model_idx, tm in enumerate(tqdm(self.models)):
+            expt = tm.reader.experiment(**expt_kwargs)
+            expt.model.eval()
+            with torch.no_grad():
+                for probe_idx, pm in enumerate(probe_meshes):
+                    _, preds, _ = expt.load_item(pm.mesh_data())
+                    weights[probe_idx, model_idx] = preds.cpu().numpy()
+
+        return [
+            VertexWeights(np.concatenate(weights[i, :], axis=1))
+            for i in range(len(probe_meshes))
+        ]
+
 @contextmanager
 def maybe_plotter(p: pv.Plotter | None = None, **kwargs) -> Iterator[pv.Plotter]:
     show = p is None
@@ -321,12 +340,16 @@ class ProbeMesh:
             cache=True,
             recache=False,
             corpus_index: str | None = None,
+            wrap=True,
+            relative_alpha=100,
+            relative_offset=600,
+            simplify_n_faces: int | None = None,
     ):
         import pymeshfix  # noqa
         from seagullmesh import Mesh3
 
         mesh_file = Path(mesh_file)
-        cache_file = mesh_file.with_suffix(mesh_file.suffix + '.cache')
+        cache_file = mesh_file.with_suffix('.cache' + mesh_file.suffix)
 
         if cache and not recache and cache_file.exists():
             probe_mesh = pv.read(cache_file)
@@ -334,6 +357,7 @@ class ProbeMesh:
             pv_mesh = pv.read(mesh_file).triangulate().clean()
 
             if repair:
+                print('pymeshfix')
                 meshfix = pymeshfix.MeshFix(pv_mesh.points, pv_mesh.regular_faces)
                 meshfix.repair()
                 pv_mesh = meshfix.mesh
@@ -341,10 +365,18 @@ class ProbeMesh:
             sm_mesh = Mesh3.from_pyvista(pv_mesh)
 
             if fill_holes:
+                print('fill holes')
                 sm_mesh.triangulate_holes(sm_mesh.extract_boundary_cycles())
 
-            sm_wrapped = sm_mesh.alpha_wrapping(relative_alpha=100, relative_offset=600)
-            probe_mesh = sm_wrapped.to_pyvista()
+            if wrap:
+                print('alpha wrapping')
+                sm_mesh = sm_mesh.alpha_wrapping(relative_alpha=relative_alpha, relative_offset=relative_offset)
+
+            if simplify_n_faces:
+                print('edge collapse')
+                sm_mesh.edge_collapse('face', simplify_n_faces)
+
+            probe_mesh = sm_mesh.to_pyvista()
 
             if cache:
                 probe_mesh.save(cache_file)
@@ -356,18 +388,45 @@ class ProbeMesh:
             self,
             weights: np.ndarray,
             shape: tuple[int, int],
-            plotter: pv.Plotter | None = None,
             link_views=True,
             render=True,
+            scalar_bar=True,
+            titles=None,
+            **kwargs
     ):
-        with maybe_plotter(plotter) as plotter:
-            plotters = iter_subplots(plotter, shape=shape, link_views=link_views)
-            for i, ((_r, _c), p) in enumerate(plotters):
-                p.add_mesh(self.mesh.copy(), scalars=weights[:, i])
-                p.camera = self.camera
+        plotter = pv.Plotter(shape=(1, 3), off_screen=render, **kwargs)
+        plotters = iter_subplots(plotter, shape=shape, link_views=link_views)
+        if titles is None:
+            titles = ['' for _ in range(np.prod(shape))]
 
-            if render:
-                return PIL.Image.fromarray(plotter.screenshot())  # noqa
-            else:
-                return plotter
+        for i, ((row_col, p), ttl) in enumerate(zip(plotters, titles)):
+            p.add_mesh(self.mesh.copy(), scalars=weights[:, i], show_scalar_bar=i == 0 and scalar_bar)
+            p.camera = self.camera
 
+            if ttl:
+                p.add_title(ttl)
+
+        if render:
+            return PIL.Image.fromarray(plotter.screenshot())  # noqa
+        else:
+            plotter.show()
+            return plotter
+
+
+@dataclass
+class VertexWeights:
+    weights: np.ndarray  # (n_verts, n_channels)
+
+    def pca(self, n=3, normalize=True):
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=n)
+        w_hat = pca.fit_transform(self.weights)
+
+        if normalize:
+            w_hat_min = w_hat.min(axis=0)
+            w_hat_max = w_hat.max(axis=0)
+            w_hat_norm = (w_hat - w_hat_min) / (w_hat_max - w_hat_min)
+            w_hat_norm = (w_hat_norm * 2) - 1
+            return w_hat_norm
+        else:
+            return w_hat
