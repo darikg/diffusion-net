@@ -530,24 +530,30 @@ def specs():
 def main():
     logger = logging.getLogger(__name__)
 
-    augment = AugmentMode(max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1)
+    augment = (
+        None,
+        AugmentMode(desc='all', max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1),
+        AugmentMode(desc='rot', max_rotate=np.deg2rad(30), max_translate=None, max_scale=None),
+        AugmentMode(desc='translate', max_rotate=None, max_translate=0.1, max_scale=None),
+        AugmentMode(desc='scale', max_rotate=None, max_translate=None, max_scale=0.1),
+    )
     spec = specs()[51]
 
     opts = Options.for_timestamp(
-        n_epoch=75,
+        n_epoch=75, # 75,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
         data_file=spec.data_file,
-        channel=spec.split_channels(include_all_channels=True, channel_subset=[0, 4, 5, 6, 7, 10]),      # !!!!!
-        # channel = spec.all_channels(),
+        # channel=spec.split_channels(include_all_channels=True, channel_subset=[0, 4, 5, 6, 7, 10]),      # !!!!!
+        channel = spec.all_channels(),
         trained=spec.trained,               # !!!!!
         iter_channels=False,                # !!!!!
-        ultimate_linear=(False, True),
+        ultimate_linear=(False,),
 
         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
         weight_error=(None,),
-        augment=(None,),  # (None, augment)
+        augment=augment,  # (None, augment)
         k_eig=(128,),
         learning_rate=(1e-4,),
         decay_every=(10,),

@@ -77,6 +77,7 @@ FeatureMode = Literal['xyz', 'hks'] | tuple[Literal['dirac'], float]
 
 @dataclass(frozen=True)
 class AugmentMode:
+    desc: str
     max_rotate: float | None = None  # radians
     max_translate: float | None = None  # fraction of bbox
     max_scale: float | None = None  # 0.1 means +/- 10%

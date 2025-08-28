@@ -303,18 +303,6 @@ class ProbeMesh:
         t = pv.array_from_vtkmatrix(self.camera.GetViewTransformMatrix())
         return self.mesh.transform(t, inplace=False)
 
-    def plotter(self, ground=True):
-        p = pv.Plotter()
-        p.add_mesh(self.mesh)
-        p.camera = self.camera
-        if ground:
-            p.add_mesh(pv.Plane(), color='gray')
-        return p
-
-    def render(self, ground=True):
-        img = self.plotter(ground=ground).screenshot()
-        return PIL.Image.fromarray(img)  # noqa
-
     def scale_camera_dist(self, frac=1.0):
         if frac == 1:
             return self
@@ -395,7 +383,7 @@ class ProbeMesh:
     def plot_weights(
             self,
             weights: np.ndarray,
-            shape: tuple[int, int],
+            shape: tuple[int, int] | None = None,
             link_views=True,
             render=True,
             scalar_bar=True,
@@ -420,6 +408,29 @@ class ProbeMesh:
             plotter.show()
             return plotter
 
+    def render(self, window_size=None, ground=True, **kwargs):
+        p = pv.Plotter(window_size=window_size, off_screen=True)
+        p.add_mesh(self.mesh, **kwargs)
+        p.camera = self.camera
+        if ground:
+            p.add_mesh(pv.Plane(), color='gray')
+
+        img = p.screenshot()
+        p.close()
+        return PIL.Image.fromarray(img)  # noqa
+
+    def render_weights(self, weights: np.ndarray, img_sz=(500, 500)):
+        from torchvision.transforms.functional import to_tensor  # noqa
+
+        imgs = [
+            to_tensor(
+                self.render(
+                    window_size=img_sz, ground=False, scalars=w, show_scalar_bar=False
+                )
+            )
+            for w in tqdm(weights.T, total=weights.shape[1])
+        ]
+        return imgs
 
 @dataclass
 class VertexWeights:
