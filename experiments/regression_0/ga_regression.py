@@ -20,7 +20,7 @@ from tbparse import SummaryReader
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from tqdm.autonotebook import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net  # noqa
@@ -529,18 +529,19 @@ def specs():
 
 def main():
     logger = logging.getLogger(__name__)
+    num_workers: int | None = 8
+    persistent_workers = True
 
     augment = (
+        AugmentMode(desc='mild', max_rotate=np.deg2rad(30), max_translate=0.10, max_scale=0.15),
+        AugmentMode(desc='med', max_rotate=np.deg2rad(45), max_translate=0.15, max_scale=0.2),
+        AugmentMode(desc='hot', max_rotate=np.deg2rad(60), max_translate=0.2, max_scale=0.25),
         None,
-        AugmentMode(desc='all', max_rotate=np.deg2rad(30), max_translate=0.1, max_scale=0.1),
-        AugmentMode(desc='rot', max_rotate=np.deg2rad(30), max_translate=None, max_scale=None),
-        AugmentMode(desc='translate', max_rotate=None, max_translate=0.1, max_scale=None),
-        AugmentMode(desc='scale', max_rotate=None, max_translate=None, max_scale=0.1),
     )
     spec = specs()[51]
 
     opts = Options.for_timestamp(
-        n_epoch=75, # 75,
+        n_epoch=200, # 75,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
@@ -556,7 +557,7 @@ def main():
         augment=augment,  # (None, augment)
         k_eig=(128,),
         learning_rate=(1e-4,),
-        decay_every=(10,),
+        decay_every=(25,),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
         use_visible=(None,),
@@ -587,8 +588,9 @@ def main():
         if starting_weights:
             expt.model.load_state_dict(starting_weights)
 
-        train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True)
-        test_loader = DataLoader(expt.test_dataset, batch_size=None)
+        # TODO THINK I NEED NUM_WORKERS HERE
+        train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True, num_workers=num_workers, persistent_workers=persistent_workers)
+        test_loader = DataLoader(expt.test_dataset, batch_size=None, shuffle=False, num_workers=num_workers, persistent_workers=persistent_workers)
 
         best_loss = np.inf
 
@@ -723,8 +725,8 @@ class Reader:
         return self._meta
 
     def experiment(self, last_trained: bool = False, outputs_at: str | None = None):
-        if self._experiment:
-            return self._experiment
+        # if self._experiment:
+        #     return self._experiment
         train_ds, test_ds = self._meta.load_datasets(train_test_scenes=(self.train_scenes, self.test_scenes))
         expt = self._experiment = self.metadata.experiment(train_dataset=train_ds, test_dataset=test_ds, )
         f = self._meta.model_file

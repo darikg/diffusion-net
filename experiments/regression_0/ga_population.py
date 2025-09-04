@@ -6,7 +6,7 @@ import pyvista as pv
 from matplotlib import pyplot as plt
 from scipy.stats import linregress
 from sklearn.decomposition import PCA
-from tqdm.notebook import tqdm
+from tqdm.autonotebook import tqdm
 
 from ga_dataset import *
 from ga_regression import *
@@ -86,20 +86,6 @@ class SourceModel:
         cp_responses.columns = pd.MultiIndex.from_tuples(tuples, names=["model_idx", "channel_idx"])
         return cp_responses.fillna(0)
 
-    @cached_property
-    def channel_tweaks(self):
-        obs, preds = self.reader.scatter_data.for_scenes(scene_ids=self.reader.train_scenes)
-        return [
-            linregress(preds[:, i], obs[:, i])
-            for i in range(self.n_channels)
-        ]
-
-    def correct_predictions(self, preds: np.ndarray):
-        out = np.zeros_like(preds)
-        for i, lr in enumerate(self.channel_tweaks):
-            out[:, i] = lr.intercept + lr.slope * preds[:, i]
-        return out
-
 
 class SourceModels:
     def __init__(self, models: list[SourceModel]):
@@ -109,7 +95,7 @@ class SourceModels:
         yield from self.models
 
     def __getitem__(self, i):
-        if isinstance(i, int):
+        if isinstance(i, (int, np.integer)):
             return self.models[i]
         else:
             return SourceModels(list(np.array(self.models)[i]))
@@ -174,7 +160,7 @@ class SourceModels:
             ax.axis('off')
             ax.set_title(ttl.split('.')[0])
 
-    def get_predictions(self, probe_meshes: list[ProbeMesh], correct_channels: bool):
+    def get_predictions(self, probe_meshes: list[ProbeMesh]):
         n_mesh = len(probe_meshes)
         out = []
         for i, tm in enumerate(tqdm(self.models)):
@@ -190,14 +176,13 @@ class SourceModels:
                         _, preds_j, _ = expt.load_item(md)
                         preds[j, :] = preds_j.cpu().numpy()
 
-                if correct_channels:
-                    preds = tm.correct_predictions(preds)
-
             tuples = [(i, j) for j in range(n_channel)]
             columns = pd.MultiIndex.from_tuples(tuples, names=["model_idx", "channel_idx"])
             out.append(pd.DataFrame(preds, columns=columns))
 
-        return pd.concat(out, axis=1)
+        df = pd.concat(out, axis=1)
+        df = df.set_index(pd.Index([pm.index for pm in probe_meshes]))
+        return df
 
     @staticmethod
     def current_trained():
@@ -284,12 +269,24 @@ class ProbeMesh:
             mesh: pv.PolyData,
             cam_pos: np.ndarray,
             tgt_pos: np.ndarray,
-            corpus_index: str | None = None,
+            index: str | int | None = None,
+            img_file: str | Path | None = None,
+            orig_mesh_file: Path | None = None,
     ):
         self.mesh = mesh
         self.cam_pos = cam_pos
         self.tgt_pos = tgt_pos
-        self.corpus_index = corpus_index
+        self.index = index
+        self.img_file = Path(img_file)
+        self.orig_mesh_file = orig_mesh_file
+
+    @cached_property
+    def img(self) -> PIL.Image.Image:  # noqa
+        return PIL.Image.open(self.img_file)    # noqa
+
+    @cached_property
+    def orig_mesh(self):
+        return pv.read(self.orig_mesh_file)
 
     @property
     def camera(self) -> pv.Camera:
@@ -319,6 +316,22 @@ class ProbeMesh:
         return MeshData.simple(verts=mesh.points, faces=mesh.regular_faces, k_eig=k_eig, op_cache_dir=op_cache_dir)
 
     @staticmethod
+    def load_ga_stim(data_dir: Path, scenes_df: pd.DataFrame):
+        for scene_id, r in tqdm(scenes_df.iterrows(), total=len(scenes_df)):
+            orig = pv.read(data_dir / r.remeshed)
+            from_cam_transform = np.linalg.inv(orig.field_data['to_cam_transform'])
+            mesh = pv.read(data_dir / r.simplified).transform(from_cam_transform, inplace=False)
+
+            pm = ProbeMesh(
+                mesh=mesh,
+                cam_pos=orig.field_data['cam_pos'],
+                tgt_pos=orig.field_data['cam_focal_point'],
+                index=int(scene_id),
+                img_file=data_dir / r.render,
+            )
+            yield pm
+
+    @staticmethod
     def load(
             mesh_file: str | Path,
             cam_pos: tuple[float, float, float],
@@ -327,12 +340,13 @@ class ProbeMesh:
             fill_holes=False,
             cache=True,
             recache=False,
-            corpus_index: str | None = None,
+            index: str | None = None,
             wrap=True,
             relative_alpha=100,
             relative_offset=600,
             simplify_n_faces: int | None = None,
             verbose=False,
+            img_file: Path | str | None = None,
     ):
         import pymeshfix  # noqa
         from seagullmesh import Mesh3
@@ -378,7 +392,13 @@ class ProbeMesh:
                 probe_mesh.save(cache_file)
 
         return ProbeMesh(
-            mesh=probe_mesh, cam_pos=np.array(cam_pos), tgt_pos=np.array(tgt_pos), corpus_index=corpus_index)
+            mesh=probe_mesh,
+            cam_pos=np.array(cam_pos),
+            tgt_pos=np.array(tgt_pos),
+            index=index,
+            img_file=img_file,
+            orig_mesh_file=mesh_file,
+        )
 
     def plot_weights(
             self,
@@ -390,8 +410,19 @@ class ProbeMesh:
             titles=None,
             **kwargs
     ):
-        plotter = pv.Plotter(shape=(1, 3), off_screen=render, **kwargs)
-        plotters = iter_subplots(plotter, shape=shape, link_views=link_views)
+        if shape is None:
+            if weights.ndim > 1:
+                n = int(np.ceil(np.sqrt(weights.shape[1])))
+                shape = (n, n)
+
+        plotter = pv.Plotter(shape=shape, off_screen=render, **kwargs)
+
+        if weights.ndim == 1:
+            weights = weights.reshape(1, -1)
+            plotters = ((0, 0), plotter),
+        else:
+            plotters = iter_subplots(plotter, shape=shape, link_views=link_views)
+
         if titles is None:
             titles = ['' for _ in range(np.prod(shape))]
 
@@ -408,9 +439,15 @@ class ProbeMesh:
             plotter.show()
             return plotter
 
-    def render(self, window_size=None, ground=True, **kwargs):
+    def render(self, window_size=None, ground=True, weights=None, **kwargs):
+        mesh = self.mesh
+        if weights is not None:
+            mesh = mesh.copy()
+            mesh.point_data['weights'] = weights
+            kwargs['scalars'] = 'weights'
+
         p = pv.Plotter(window_size=window_size, off_screen=True)
-        p.add_mesh(self.mesh, **kwargs)
+        p.add_mesh(mesh, **kwargs)
         p.camera = self.camera
         if ground:
             p.add_mesh(pv.Plane(), color='gray')
@@ -449,3 +486,262 @@ class VertexWeights:
             return w_hat_norm
         else:
             return w_hat
+
+
+
+def probe_meshes():
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\VervertMonkey\JF0N2N0B_VervetMonkeys_Blender\JF0N2N0B_VervetMonkeys_Blender\JF0N2N0B_VervetMonkeys_Run_v4_mesh_extraction.ply",
+        img_file=r"C:\corpus2_temp\JF0N2N0B_VervetMonkeys_Run_v4_orig_Main.png",
+        index='JC0L219A2_GreyTabbyCat_Trot_v4_orig_Main.png',
+        cam_pos=(-0.883204, -1.11311, 1.03748),
+        tgt_pos=(0.062604, 0.152099, 0.187549),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\GreyTabbyCat\JC0L219A2_GreyTabbyCat_Blender\JC0L219A2_GreyTabbyCat_Blender\JC0L219A2_GreyTabbyCat_Trot_v4.mesh_extraction2.ply",
+        img_file=r"C:\corpus2_temp\JC0L219A2_GreyTabbyCat_Trot_v4_orig_Main.png",
+        index='JF0N2N0B_VervetMonkeys_Run_v4_orig_Main.png',
+        cam_pos=(-0.19411747, -0.86916119, 0.33897164),
+        tgt_pos=(2.28889287e-04, -3.71107072e-01, 1.14519626e-01),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=100,
+        relative_offset=600,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\SnowshoeHare\JU0L219A1_SnowshoeHare_Summer_Blender\JU0L219A1_SnowshoeHare_Summer_Jump_v4_A_mesh_extraction.ply",
+        index='JU0L219A1_SnowshoeHare_Summer_Jump_v4_A_orig_Main.png',
+        img_file=r"C:\corpus2_temp\JU0L219A1_SnowshoeHare_Summer_Jump_v4_A_orig_Main.png",
+        cam_pos=(-0.52659595, -0.80872011, 0.40757233),
+        tgt_pos=(0.019130593165755272, -0.4574986398220062, 0.13628436625003815),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\black rattlesnake\BlackRatSnake_Rigged_blender\BlackRatSnake_FK_Poses_v4_mesh_extraction.ply",
+        index='BlackRatSnake_FK_Poses_v4_orig_Main.png',
+        img_file=r"C:\corpus2_temp\BlackRatSnake_FK_Poses_v4_orig_Main.png",
+        cam_pos=(-0.7484257221221924, 0.3798489570617676, 0.4411892890930176),
+        tgt_pos=(-0.003663875162601471, -0.04849287122488022, -0.004026277922093868),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+    
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\Cicada\Cicada_Crawl_v3_mesh_extraction.ply",
+        index='Cicada_Crawl_v3_orig.png',
+        img_file=r"C:\corpus2_temp\Cicada_Crawl_v3_orig.png",
+        cam_pos=(1.7629317045211792, -0.2856280505657196, 0.9172284603118896),
+        tgt_pos=(0.05397617816925049, 0.12930458784103394, 0.15642812848091125),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\frog\frog_v4_mesh_extraction.ply",
+        index='frog_v4_orig_Main.png',
+        img_file=r"C:\corpus2_temp\frog_v4_orig_Main.png",
+        cam_pos=(0.14727137982845306, -0.2970578372478485, 0.3091987669467926),
+        tgt_pos=(0.01088304165750742, 0.0, 0.04733939468860626),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\SpottedTurtle\Spotted-turtle_v4_mesh_extraction.ply",
+        index='Spotted-turtle_v4_orig_Main.png',
+        img_file=r"C:\corpus2_temp\Spotted-turtle_v4_orig_Main.png",
+        cam_pos=(0.2038934826850891, -0.17945489287376404, 0.20085172355175018),
+        tgt_pos=(0.0009141467162407935, 0.0057134167291224, 0.005089262500405312),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\Squirrel\Squirrel_v4_mesh_extraction.ply",
+        index='Squirrel_v4_orig_Main.png',
+        img_file=r"C:\corpus2_temp\Squirrel_v4_orig_Main.png",
+        cam_pos=(10.23602294921875, -4.244842052459717, 9.324092864990234),
+        tgt_pos=(-0.02328479290008545, -2.0086560249328613, 1.9039499759674072),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\chipmunk\JF0N2N0A_Chipmunk_Blender\JF0N2N0A_Chipmunk_FindFood_v4_mesh_extraction.ply",
+        index='JF0N2N0A_Chipmunk_FindFood_v4_orig_Main.png',
+        img_file=r"C:\corpus2_temp\JF0N2N0A_Chipmunk_FindFood_v4_orig_Main.png",
+        cam_pos=(-0.09019485861063004, -0.5623771548271179, 0.13063561916351318),
+        tgt_pos=(0.002574823796749115, -0.3826358914375305, 0.031962279230356216),
+        repair=True,
+        fill_holes=True,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\barcelona door handle brass\Barcelona Door Handle Brass_wip_v3.ply",
+        index='Barcelona Door Handle Brass_wip_v3_orig.png',
+        img_file=r"C:\corpus2_temp\Barcelona Door Handle Brass_wip_v3_orig.png",
+        cam_pos=(-0.038916219025850296, -0.17309686541557312, 0.23030444979667664),
+        tgt_pos=(-0.002232855651527643, 0.011647812090814114, 0.013855653814971447),
+        repair=False,
+        fill_holes=False,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\door knocker\Vintage_Ring_Shaped_Door_Knocker_v3_mesh_extraction.ply",
+        index='Vintage_Ring_Shaped_Door_Knocker_v3_orig.png',
+        img_file=r"C:\corpus2_temp\Vintage_Ring_Shaped_Door_Knocker_v3_orig.png",
+        cam_pos=(18.830228805541992, -1.0160112651647069e-05, 9.02007007598877),
+        tgt_pos=(0.0, 0.0, 5.857663154602051),
+        repair=False,
+        fill_holes=False,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\doorknob\door_knob_v3_mesh_extraction.ply",
+        index='door_knob_v3_orig.png',
+        img_file=r"C:\corpus2_temp\door_knob_v3_orig.png",
+        cam_pos=(-2.720917224884033, -1.9613797664642334, 3.114717960357666),
+        tgt_pos=(0.0, 0.0, 0.8159806132316589),
+        repair=False,
+        fill_holes=False,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"C:\Users\dg\OneDrive\Documents\experiment\turbosquidfiles\floor lamp\FLOOR_LAMP_02_v3_mesh_extraction.ply",
+        index='FLOOR_LAMP_02_v3_orig.png',
+        img_file=r"C:\corpus2_temp\FLOOR_LAMP_02_v3_orig.png",
+        cam_pos=(16.267391204833984, 0.5502005815505981, 13.235892295837402),
+        tgt_pos=(0.0, 1.664716362953186, 5.1058759689331055),
+        repair=False,
+        fill_holes=False,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\vintage lamp\FLOOR_LAMP_03_v3_mesh_extraction.ply",
+        index='FLOOR_LAMP_03_v3_orig.png',
+        img_file=r"C:\corpus2_temp\FLOOR_LAMP_03_v3_orig.png",
+        cam_pos=(8.832108497619629, -1.5337945222854614, 6.305342197418213),
+        tgt_pos=(0.0, 0.0, 2.986098051071167),
+        repair=False,
+        fill_holes=False,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\lamp\Lamp_v3_mesh_extraction.ply",
+        index='Lamp_v3_orig.png',
+        img_file=r"C:\corpus2_temp\Lamp_v3_orig.png",
+        cam_pos=(-0.8790243864059448, 0.008201121352612972, 0.613591730594635),
+        tgt_pos=(0.011321105062961578, -0.08542653918266296, 0.2687967121601105),
+        repair=False,
+        fill_holes=False,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
+
+    yield ProbeMesh.load(
+        mesh_file=r"D:\mesh_extract_work\muuto light\Muuto_Tip_Table_Light_v3_mesh_extraction.ply",
+        index='Muuto_Tip_Table_Light_v3_orig.png',
+        img_file=r"C:\corpus2_temp\Muuto_Tip_Table_Light_v3_orig.png",
+        cam_pos=(2.520118474960327, 22.443445205688477, 15.19332504272461),
+        tgt_pos=(0.08447802066802979, 0.232452392578125, 6.148859977722168),
+        repair=False,
+        fill_holes=False,
+        cache=True,
+        recache=False,
+        wrap=True,
+        relative_alpha=600,
+        relative_offset=1000,
+        simplify_n_faces=3000,
+    )
