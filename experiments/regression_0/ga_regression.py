@@ -533,15 +533,15 @@ def main():
     persistent_workers = True
 
     augment = (
-        AugmentMode(desc='mild', max_rotate=np.deg2rad(30), max_translate=0.10, max_scale=0.15),
-        AugmentMode(desc='med', max_rotate=np.deg2rad(45), max_translate=0.15, max_scale=0.2),
+        # AugmentMode(desc='mild', max_rotate=np.deg2rad(30), max_translate=0.10, max_scale=0.15),
+        # AugmentMode(desc='med', max_rotate=np.deg2rad(45), max_translate=0.15, max_scale=0.2),
         AugmentMode(desc='hot', max_rotate=np.deg2rad(60), max_translate=0.2, max_scale=0.25),
-        None,
+        # None,
     )
     spec = specs()[51]
 
     opts = Options.for_timestamp(
-        n_epoch=200, # 75,
+        n_epoch=125, # 75,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
@@ -560,7 +560,7 @@ def main():
         decay_every=(25,),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
-        use_visible=(None,),
+        use_visible=('orig', 'shuffled'),
         use_color=(None,),
         norm_verts=(None,),
         n_blocks=(4,),  # (3, 4, 5),

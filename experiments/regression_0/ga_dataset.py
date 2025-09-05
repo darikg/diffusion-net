@@ -249,7 +249,8 @@ class GaDataset(Dataset):
                 if self.use_visible == 'orig':
                     visible = torch.tensor(mesh.point_data['visible']).float()
                 elif self.use_visible == 'shuffled':
-                    visible = torch.tensor(mesh.point_data['shuffled_visible']).float()
+                    visible = np.load(mesh_file.with_suffix(mesh_file.suffix + '.shuffled_visible.npy'))
+                    visible = torch.tensor(visible).float()
                 else:
                     raise ValueError(self.use_visible)
 
