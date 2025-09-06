@@ -341,14 +341,19 @@ class Experiment:
             case x:
                 raise NotImplementedError(x)
 
+        kwargs = dict()
+
         if self.metadata.use_visible:
-            features = torch.cat([features, data.visible.reshape(-1, 1).to(self.device)], dim=1)
+            visible = data.visible.reshape(-1, 1).to(self.device)
+            features = torch.cat([features, visible], dim=1)
+            if self.metadata.use_visible.multiply:
+                kwargs['vertex_weights'] = visible
 
         if self.metadata.use_color:
             features = torch.cat([features, data.color.to(self.device)], dim=1)
 
         # Apply the model
-        preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces)
+        preds = self.model(features, mass, L=L, evals=evals, evecs=evecs, gradX=gradX, gradY=gradY, faces=faces, **kwargs)
         return labels, preds, weights
 
     def train_epoch(self, loader: DataLoader, epoch: int) -> tuple[float, ScatterData]:
@@ -529,7 +534,7 @@ def specs():
 
 def main():
     logger = logging.getLogger(__name__)
-    num_workers: int | None = 8
+    num_workers: int | None = 2
     persistent_workers = True
 
     augment = (
@@ -538,10 +543,18 @@ def main():
         AugmentMode(desc='hot', max_rotate=np.deg2rad(60), max_translate=0.2, max_scale=0.25),
         # None,
     )
+    use_visible = (
+        UseVisibleMode(shuffled=False, multiply=False),
+        UseVisibleMode(shuffled=True, multiply=False),
+        UseVisibleMode(shuffled=False, multiply=True),
+        UseVisibleMode(shuffled=True, multiply=True),
+    )
+
+
     spec = specs()[51]
 
     opts = Options.for_timestamp(
-        n_epoch=125, # 75,
+        n_epoch=75,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
@@ -560,7 +573,7 @@ def main():
         decay_every=(25,),
         decay_rate=(0.5,),
         input_features=('xyz',),  #
-        use_visible=('orig', 'shuffled'),
+        use_visible=use_visible,
         use_color=(None,),
         norm_verts=(None,),
         n_blocks=(4,),  # (3, 4, 5),

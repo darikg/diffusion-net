@@ -307,7 +307,7 @@ class DiffusionNet(nn.Module):
             self.blocks.append(block)
             self.add_module("block_"+str(i_block), self.blocks[-1])
 
-    def forward(self, x_in, mass, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):
+    def forward(self, x_in, mass, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None, vertex_weights=None):
         """
         A forward pass on the DiffusionNet.
 
@@ -369,10 +369,13 @@ class DiffusionNet(nn.Module):
         # Apply the last linear layer
         x = self.last_lin(x)
 
+        if vertex_weights is not None:
+            x = x * vertex_weights
+
         # Remap output to faces/edges if requested
         if self.outputs_at == 'vertices': 
             x_out = x
-        
+
         elif self.outputs_at == 'edges': 
             # Remap to edges
             x_gather = x.unsqueeze(-1).expand(-1, -1, -1, 2)

@@ -14,13 +14,12 @@ spec = specs()[51]
 file = spec.data_file
 root = file.parent
 scenes = cast(pd.DataFrame, pd.read_hdf(file, key='scenes'))
-n_faces = []  # [500,]
+n_faces = [500,]
 n_total = len(scenes)
 if n_faces:
     n_total *= len(n_faces)
 
 
-save_visible = True
 shuffle_visible = True
 shuffle_colors = False
 
@@ -69,8 +68,6 @@ def process():
                     colors[vert_idxs] * surf_pts.bary_coords[:, :, np.newaxis]).sum(axis=1)
             m_simp.point_data['shuffled_color'] = (
                     shuffled_colors[vert_idxs] * surf_pts.bary_coords[:, :, np.newaxis]).sum(axis=1)
-
-        m_simp.save(f_simp)
 
 
 if __name__ == '__main__':

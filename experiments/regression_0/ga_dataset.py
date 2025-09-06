@@ -4,7 +4,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, Tuple, Sequence, Literal, Callable, TypeAlias
+from typing import cast, Tuple, Sequence, Literal, Callable, TypeAlias, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -64,7 +64,15 @@ def apply_fit_fns(responses: pd.DataFrame, fit_fns: list[Callable[[Series], Seri
 
 
 WeightErrorMode = Literal['response', 'binned']
-UseVisibleMode = Literal['orig', 'shuffled']
+
+class UseVisibleMode(NamedTuple):
+    shuffled: bool
+    multiply: bool
+
+    def __str__(self):
+        return f'UseVisible(shuffled={self.shuffled}, multiply={self.multiply})'
+
+
 UseColorMode = Literal['orig', 'shuffled']
 
 
@@ -96,6 +104,7 @@ class MeshData:
     gradY: torch.Tensor
     labels: torch.Tensor | None
     weight: torch.Tensor | None
+    use_visible: UseVisibleMode | None
     visible: torch.Tensor | None
     color: torch.Tensor | None
 
@@ -107,6 +116,7 @@ class MeshData:
             labels=None,
             op_cache_dir=None,
             weight=None,
+            use_visible=None,
             visible=None,
             color=None,
     ) -> MeshData:
@@ -127,6 +137,7 @@ class MeshData:
             gradY=gradY,
             weight=weight,
             labels=labels,
+            use_visible=use_visible,
             visible=visible,
             color=color,
         )
@@ -246,13 +257,11 @@ class GaDataset(Dataset):
             verts, faces = mesh.points, mesh.regular_faces
 
             if self.use_visible:
-                if self.use_visible == 'orig':
-                    visible = torch.tensor(mesh.point_data['visible']).float()
-                elif self.use_visible == 'shuffled':
+                if self.use_visible.shuffled:
                     visible = np.load(mesh_file.with_suffix(mesh_file.suffix + '.shuffled_visible.npy'))
                     visible = torch.tensor(visible).float()
                 else:
-                    raise ValueError(self.use_visible)
+                    visible = torch.tensor(mesh.point_data['visible']).float()
 
             if self.use_color:
                 if self.use_color == 'orig':
@@ -325,6 +334,7 @@ class GaDataset(Dataset):
             gradY=gradY,
             weight=weight,
             labels=response,
+            use_visible=self.use_visible,
             visible=visible,
             color=color,
         )
