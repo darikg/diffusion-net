@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from experiments.regression_0.ga_regression import specs
 
-spec = specs()[51]
+spec = specs()[9]
 
 file = spec.data_file
 root = file.parent

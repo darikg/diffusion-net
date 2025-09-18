@@ -419,12 +419,12 @@ class Experiment:
         )
         return float(np.mean(losses)), sd
 
-    def predict(self, loader: DataLoader, agg_fn: Any = np.concatenate):
+    def predict(self, loader: DataLoader, agg_fn: Any = np.concatenate, leave_pbar=False):
         self.model.eval()
         obs, preds = [], []
 
         with torch.no_grad():
-            for data in tqdm(loader):
+            for data in tqdm(loader, leave=leave_pbar):
                 _obs, _preds, _weights = self.load_item(data)
                 obs.append(_obs.cpu().numpy())
                 preds.append(_preds.cpu().numpy())
@@ -544,6 +544,7 @@ def main():
         # None,
     )
     use_visible = (
+        None,
         UseVisibleMode(shuffled=False, multiply=False),
         UseVisibleMode(shuffled=True, multiply=False),
         UseVisibleMode(shuffled=False, multiply=True),
@@ -554,7 +555,7 @@ def main():
     spec = specs()[51]
 
     opts = Options.for_timestamp(
-        n_epoch=75,
+        n_epoch=100,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
@@ -688,11 +689,20 @@ class ScatterData:
 
 
 class Reader:
-    def __init__(self, metadata: Metadata, train_scenes, test_scenes):
+    def __init__(
+            self,
+            metadata: Metadata,
+            train_scenes: np.ndarray,
+            test_scenes: np.ndarray,
+            trained_file: Path | None = None,
+            trained_idx: int | None = None,
+    ):
         self.reader = SummaryReader(str(metadata.log_folder))
         self._meta = metadata
         self.train_scenes, self.test_scenes = train_scenes, test_scenes
         self._experiment: Experiment | None = None
+        self.trained_file = trained_file
+        self.trained_idx = trained_idx
 
     @property
     def log_path(self) -> Path:
@@ -969,8 +979,14 @@ class Readers:
         train_scenes, test_scenes = d['train_scenes'], d['test_scenes']
 
         readers = [
-            Reader(metadata=m, train_scenes=train_scenes, test_scenes=test_scenes)
-            for m in metas
+            Reader(
+                metadata=m,
+                train_scenes=train_scenes,
+                test_scenes=test_scenes,
+                trained_file=f,
+                trained_idx=i,
+            )
+            for i, m in enumerate(metas)
         ]
         return Readers(readers=readers)
 
