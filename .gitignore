@@ -58,3 +58,9 @@ pyrightconfig.json
 **/*-checkpoint.ipynb
 **/*-checkpoint.py
 **/Untitled*.ipynb
+
+# Training stuff
+*.hdf
+*.pt
+*.zip
+*.png

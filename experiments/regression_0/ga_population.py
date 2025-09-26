@@ -309,6 +309,31 @@ def iter_subplots(
             p.link_views()
 
 
+def calc_visible(mesh: pv.PolyData, cam: pv.Camera, res: tuple[int, int], off_screen=True) -> np.ndarray:
+    from pyvista.plotting import Plotter
+    from vtkmodules.vtkRenderingCore import vtkSelectVisiblePoints
+    from pyvista.core.filters import _get_output  # noqa
+
+    mesh.point_data['orig_idx'] = np.arange(mesh.n_points)
+    p = Plotter(off_screen=off_screen, window_size=res)
+    p.add_mesh(mesh)
+    p.camera = cam
+    if off_screen:
+        _img = p.screenshot(window_size=res)
+    else:
+        p.show()
+
+    svp = vtkSelectVisiblePoints()
+    svp.SetInputData(mesh)
+    svp.SetRenderer(p.renderer)
+    svp.Update()
+
+    vis_mesh = _get_output(svp)
+    is_vis = np.zeros(mesh.n_points, dtype=bool)
+    is_vis[vis_mesh.point_data['orig_idx']] = True
+    return is_vis
+
+
 class ProbeMesh:
     def __init__(
             self,
@@ -335,6 +360,10 @@ class ProbeMesh:
     @cached_property
     def orig_mesh(self):
         return pv.read(self.orig_mesh_file)
+
+    @cached_property
+    def vertex_visibility(self) -> np.ndarray:
+        return calc_visible(mesh=self.mesh, cam=self.camera, res=(1024, 1024), off_screen=True)
 
     @property
     def camera(self) -> pv.Camera:
@@ -419,12 +448,24 @@ class ProbeMesh:
             plotter.show()
             return plotter
 
-    def render(self, window_size=None, ground=True, weights=None, **kwargs):
+    def render(
+            self,
+            window_size=None,
+            ground=True,
+            weights=None,
+            weights_clim_pctile: tuple[float, float] | None = None,
+            **kwargs,
+    ):
         mesh = self.mesh
         if weights is not None:
             mesh = mesh.copy()
             mesh.point_data['weights'] = weights
             kwargs['scalars'] = 'weights'
+
+            if weights_clim_pctile:
+                w = weights[self.vertex_visibility]
+                w0, w1 = np.percentile(w, weights_clim_pctile)
+                kwargs['clim'] = (w0, w1)
 
         p = pv.Plotter(window_size=window_size, off_screen=True)
         p.add_mesh(mesh, **kwargs)
