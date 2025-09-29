@@ -1,13 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
-
+from experiments.regression_0.analysis import Reader
 # In[1]:
 
 
 from ga_regression import *
 from matplotlib import pyplot as plt
-from functools import partial
-
 
 # In[2]:
 

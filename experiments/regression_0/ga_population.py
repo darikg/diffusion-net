@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import PIL
-import numpy as np
 import pyvista as pv
 from matplotlib import pyplot as plt
-from scipy.stats import linregress
 from sklearn.decomposition import PCA
-from tqdm.autonotebook import tqdm
 
+from experiments.regression_0.analysis import Reader, Readers
 from ga_dataset import *
 from ga_regression import *
 

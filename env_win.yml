@@ -18,6 +18,7 @@ dependencies:
   # - cudatoolkit=11.6
   # - pytorch-cuda=12.1
   # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+  - # Really only need saegullmesh for the write_visible stuff?
   - scikit-learn
   - tbparse
   - pandas
