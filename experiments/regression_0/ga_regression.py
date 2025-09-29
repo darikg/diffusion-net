@@ -399,6 +399,7 @@ class Experiment:
         return float(np.mean(losses)), sd
 
     def test(self, loader):
+        from analysis import ScatterData
         self.model.eval()
         losses = []
 
