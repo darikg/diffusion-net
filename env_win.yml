@@ -17,7 +17,9 @@ dependencies:
   - torchvision
   # - cudatoolkit=11.6
   # - pytorch-cuda=12.1
+  # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
   - scikit-learn
+  - tbparse
   - pandas
   - pytables
   - jupyter

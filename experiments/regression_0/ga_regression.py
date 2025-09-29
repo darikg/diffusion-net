@@ -501,32 +501,32 @@ def specs(root=r"D:\resynth"):
 
     return {
         9: DataSpec(
-            data_file=root / r"run_09_10\run00009_resynth\run00009_resynth.hdf",
+            data_file=root / r"run_09_10/run00009_resynth/run00009_resynth.hdf",
             channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
-            # trained=TrainedSpec(Path(r"D:\resynth\run_09_10\run00009_resynth\2025-08-08-12-28-22\opts_and_metadata.pt"), 5),
+            # trained=TrainedSpec(Path(r"D:/resynth/run_09_10/run00009_resynth/2025-08-08-12-28-22/opts_and_metadata.pt"), 5),
         ),
         20: DataSpec(
-            data_file=root / r"run_20_21\run00020_resynth\run00020_resynth.hdf",
+            data_file=root / r"run_20_21/run00020_resynth/run00020_resynth.hdf",
             channel=(2, 17, 13, 29, 14, 7, 23, 3, 28, 8, 12, 18, 31, 27, 4, 11, 30, 19, 20, 24),
             trained=None,
         ),
         38: DataSpec(
-            data_file=root / r"run_38_39\run00038_resynth\run00038_resynth.hdf",
+            data_file=root / r"run_38_39/run00038_resynth/run00038_resynth.hdf",
             channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 9, 20, 11, 18),
             trained=None,
         ),
         42: DataSpec(
-            data_file=root / r"run_42_43\run00042_resynth\run00042_resynth.hdf",
+            data_file=root / r"run_42_43/run00042_resynth/run00042_resynth.hdf",
             channel=(18, 9, 7, 28, 24, 27, 5, 22, 19, 10, 26, 20, 11),
             trained=None,
         ),
         48: DataSpec(
-            data_file=root / r"run_48_49\run00048_resynth\run00048_resynth.hdf",
+            data_file=root / r"run_48_49/run00048_resynth/run00048_resynth.hdf",
             channel=(14, 17, 29, 23, 2, 0, 13, 31, 3, 26, 28, 9, 20, 11, 18),
             trained=None,
         ),
         51: DataSpec(
-            data_file=root / r"run_51_52\run00051_resynth\run00051_resynth.hdf",
+            data_file=root / r"run_51_52/run00051_resynth/run00051_resynth.hdf",
             channel=(0, 2, 29, 5, 17, 23, 14, 31, 18, 30, 7, 25, 3, 9),
             trained=None,
         ),
