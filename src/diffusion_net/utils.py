@@ -120,4 +120,4 @@ def random_rotation_matrix(randgen=None):
 # Python string/file utilities
 def ensure_dir_exists(d):
     if not os.path.exists(d):
-        os.makedirs(d)
+        os.makedirs(d, exist_ok=True)
