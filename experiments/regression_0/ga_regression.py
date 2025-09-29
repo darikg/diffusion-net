@@ -7,8 +7,9 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from itertools import product
 from pathlib import Path
-from typing import Tuple, Any, Sequence, Iterator
+from typing import Tuple, Any, Sequence, Iterator, TypedDict, TYPE_CHECKING
 
+import click
 import numpy as np
 import pandas as pd
 import torch
@@ -18,7 +19,6 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 
-from experiments.regression_0.analysis import ScatterData
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../src/"))  # add the path to the DiffusionNet src
 import diffusion_net  # noqa
@@ -27,6 +27,9 @@ from diffusion_net.layers import DiffusionNet   # noqa
 from ga_dataset import GaDataset, UseVisibleMode, WeightErrorMode, MeshData, UseColorMode, NormVertMode, \
     FeatureMode, AugmentMode  # noqa
 
+
+if TYPE_CHECKING:
+    from analysis import ScatterData
 
 def hparam_combinations(hparams: dict[str, Sequence[Any]]) -> Iterator[dict[str, Any]]:
     for vals in product(*hparams.values()):
@@ -252,6 +255,8 @@ class Options:
     train_frac: float = 0.95
     n_epoch: int = 1
     iter_channels: bool = False
+    num_workers = 2
+    persistent_workers = True
 
     @staticmethod
     def for_timestamp(data_file: Path, stamp: str | None = None, **kwargs) -> Options:
@@ -355,6 +360,8 @@ class Experiment:
         return labels, preds, weights
 
     def train_epoch(self, loader: DataLoader, epoch: int) -> tuple[float, ScatterData]:
+        from analysis import ScatterData
+
         # Returns mean training loss
         if epoch > 0 and epoch % self.metadata.decay_every == 0:
             self.metadata.curr_learning_rate *= self.metadata.decay_rate
@@ -536,17 +543,19 @@ def run_one_metadata_expt(
         meta: Metadata,
         train_test_scenes: tuple[np.ndarray, np.ndarray],
         starting_weights: torch.Tensor | None,  # noqa
-        num_workers: int | None = None,
-        persistent_workers: bool | None = None
 ):
     train_dataset, test_dataset = meta.load_datasets(train_test_scenes=train_test_scenes)
     expt = meta.experiment(train_dataset=train_dataset, test_dataset=test_dataset)
 
-    if starting_weights is None and meta.opts.trained:
+    if starting_weights is None and (t := meta.opts.trained):
+        f = torch.load(t.trained_file)['metadata'][t.idx].model_file
         starting_weights = torch.load(f)
 
     if starting_weights is not None:
         expt.model.load_state_dict(starting_weights)
+
+    num_workers = meta.opts.num_workers
+    persistent_workers = meta.opts.persistent_workers
 
     train_loader = DataLoader(expt.train_dataset, batch_size=None, shuffle=True, num_workers=num_workers,
                               persistent_workers=persistent_workers)
@@ -576,8 +585,20 @@ def run_one_metadata_expt(
     torch.save(expt.model.state_dict(), last_model_file)
 
 
+@click.group()
+def cli():
+    pass
 
-def generate_experiments():
+
+class GeneratedExpts(TypedDict):
+    opts: Options
+    metadata: list[Metadata]
+    train_scenes: np.ndarray
+    test_scenes: np.ndarray
+
+
+@cli.command
+def generate():
     augment = (
         # AugmentMode(desc='mild', max_rotate=np.deg2rad(30), max_translate=0.10, max_scale=0.15),
         # AugmentMode(desc='med', max_rotate=np.deg2rad(45), max_translate=0.15, max_scale=0.2),
@@ -604,8 +625,8 @@ def generate_experiments():
         data_file=spec.data_file,
         # channel=spec.split_channels(include_all_channels=True, channel_subset=[0, 4, 5, 6, 7, 10]),      # !!!!!
         channel = spec.all_channels(),
-        trained=spec.trained,               # !!!!!
-        iter_channels=False,                # !!!!!
+        trained=spec.trained,
+        iter_channels=False,
         ultimate_linear=(False,),
 
         spike_window=((0.07, 0.75),),  # ) (0.07, 0.4), (0.4, 0.75)),
@@ -626,13 +647,6 @@ def generate_experiments():
     opts.init_log()
     train_test_scenes = None
     metas = [meta.restamp(idx=i) for i, meta in  enumerate(opts.iter_metadata())]
-
-    # if t := spec.trained:
-    #     f = torch.load(t.trained_file)['metadata'][t.idx].model_file
-    #     starting_weights = torch.load(f)
-    # else:
-    #     starting_weights = None
-
     train_dataset, test_dataset = metas[0].load_datasets(train_test_scenes=train_test_scenes)
     train_test_scenes = train_dataset.df.index.values, test_dataset.df.index.values
 
@@ -645,8 +659,54 @@ def generate_experiments():
     final = opts.log_folder / 'opts_and_metadata.pt'
     torch.save(metadata, final)
 
+    print(f'{len(metas)} experiments to run')
     print(final)
 
 
+@cli.command()
+@click.argument('file', type=click.Path(exists=True, file_okay=True, dir_okay=False, resolve_path=True))
+@click.argument('idx', type=int)
+def run(
+        file: Path,
+        idx: int,
+):
+    g: GeneratedExpts = torch.load(file)
+    run_one_metadata_expt(
+        meta=g['metadata'][idx],
+        train_test_scenes=(g['train_scenes'], g['test_scenes']),
+        starting_weights=None,
+    )
+
+
+@cli.command()
+@click.argument('file', type=click.Path(exists=True, file_okay=True, dir_okay=False, resolve_path=True))
+def submit(file: Path):
+    import htcondor  # noqa
+    g: GeneratedExpts = torch.load(file)
+    n = len(g['metadata'])
+    f = g['opts'].log_folder
+
+    arguments = [
+        'run',  '-p', '/home/darik/micromamba/envs/diffnet2', 'python', __file__, 'run',
+        str(file),
+        '$(ProcId)'
+    ]
+
+    job = htcondor.Submit(dict(  # noqa
+        executable="/home/darik/micromamba/envs/cemetery/bin/conda",
+        arguments = ' '.join(arguments),
+        output=str(f / 'condor.$(ProcId).out'),
+        error=str(f / 'condor.$(ProcId).err'),
+        log=str(f / 'condor.$(ProcId).log'),
+        request_cpus="4",
+        request_memory="1GB",  # how much memory we want
+        # request_disk="128MB",  # how much disk space we want
+    ))
+
+    schedd = htcondor.Schedd()  # noqa
+    submit_result = schedd.submit(job, count=n)
+    print(f'cluster_id = {submit_result.cluster()}')
+
+
 if __name__ == '__main__':
-    main()
+    cli()

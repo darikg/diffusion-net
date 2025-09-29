@@ -12,7 +12,7 @@ from pandas import Series
 from tbparse import SummaryReader
 from torch.utils.data import DataLoader
 
-from experiments.regression_0.ga_regression import Metadata, Experiment
+from ga_regression import Metadata, Experiment
 
 
 @dataclass
