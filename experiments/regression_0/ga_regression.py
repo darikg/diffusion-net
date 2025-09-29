@@ -543,14 +543,14 @@ def main():
         # AugmentMode(desc='mild', max_rotate=np.deg2rad(30), max_translate=0.10, max_scale=0.15),
         # AugmentMode(desc='med', max_rotate=np.deg2rad(45), max_translate=0.15, max_scale=0.2),
         AugmentMode(desc='hot', max_rotate=np.deg2rad(60), max_translate=0.2, max_scale=0.25),
-        # None,
+        None,
     )
     use_visible = (
         None,
-        UseVisibleMode(shuffled=False, multiply=False),
-        UseVisibleMode(shuffled=True, multiply=False),
-        UseVisibleMode(shuffled=False, multiply=True),
-        UseVisibleMode(shuffled=True, multiply=True),
+        # UseVisibleMode(shuffled=False, multiply=False),
+        # UseVisibleMode(shuffled=True, multiply=False),
+        # UseVisibleMode(shuffled=False, multiply=True),
+        # UseVisibleMode(shuffled=True, multiply=True),
     )
 
     root = r"/home/darik/resynth"
