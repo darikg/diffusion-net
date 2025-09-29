@@ -670,7 +670,7 @@ def run(
         file: Path,
         idx: int,
 ):
-    g: GeneratedExpts = torch.load(file)
+    g: GeneratedExpts = torch.load(file, weights_only=False)
     run_one_metadata_expt(
         meta=g['metadata'][idx],
         train_test_scenes=(g['train_scenes'], g['test_scenes']),
@@ -682,7 +682,7 @@ def run(
 @click.argument('file', type=click.Path(exists=True, file_okay=True, dir_okay=False, resolve_path=True))
 def submit(file: Path):
     import htcondor  # noqa
-    g: GeneratedExpts = torch.load(file)
+    g: GeneratedExpts = torch.load(file, weights_only=False)
     n = len(g['metadata'])
     f = g['opts'].log_folder
 
