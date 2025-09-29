@@ -613,8 +613,8 @@ def generate():
         # UseVisibleMode(shuffled=True, multiply=True),
     )
 
-    # root = r"/home/darik/resynth"
-    root = r"D:\resynth"
+    root = r"/home/darik/resynth"
+    # root = r"D:\resynth"
     spec = specs(root=root)[9]
 
     opts = Options.for_timestamp(

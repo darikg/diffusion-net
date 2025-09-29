@@ -11,8 +11,8 @@ dependencies:
   # - plyfile
   - tqdm
   - igl
-  - ipython
-  - matplotlib
+ #  - ipython
+  # - matplotlib
   - pytorch
   - torchvision
   # - cudatoolkit=11.6
@@ -24,7 +24,7 @@ dependencies:
   - pandas
   - pytables
   - pyvista
-  - jupyter
+  # - jupyter
   - pip:
     - potpourri3d
     - robust-laplacian
