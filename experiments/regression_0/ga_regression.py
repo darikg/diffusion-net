@@ -348,7 +348,8 @@ class Experiment:
 
         if self.metadata.use_visible:
             visible = data.visible.reshape(-1, 1).to(self.device)
-            features = torch.cat([features, visible], dim=1)
+            if self.metadata.use_visible.feature:
+                features = torch.cat([features, visible], dim=1)
             if self.metadata.use_visible.multiply:
                 kwargs['vertex_weights'] = visible
 
@@ -608,7 +609,12 @@ def generate():
     )
     use_visible = (
         None,
-        # UseVisibleMode(shuffled=False, multiply=False),
+        UseVisibleMode(shuffled=False, multiply=False, feature=True),
+        UseVisibleMode(shuffled=True, multiply=False, feature=True),
+
+        UseVisibleMode(shuffled=False, multiply=True, feature=False),
+        UseVisibleMode(shuffled=True, multiply=True, feature=False),
+
         # UseVisibleMode(shuffled=True, multiply=False),
         # UseVisibleMode(shuffled=False, multiply=True),
         # UseVisibleMode(shuffled=True, multiply=True),

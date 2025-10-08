@@ -24,7 +24,6 @@ shuffle_visible = True
 shuffle_colors = False
 
 
-
 def iter_files() -> Iterator[tuple[Path, Path, Path]]:
     for orig, simplified, md in tqdm(zip(scenes.remeshed, scenes.simplified, scenes.mesh_data), total=n_total):
         if not orig or not simplified or not md:
