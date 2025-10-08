@@ -722,7 +722,7 @@ def submit(file: Path):
 def compress(file: Path):
     import shutil
     file = Path(file)
-    zip_file = file.parent.parent / (file.parent.name + '.zip')
+    zip_file = file.parent.parent / file.parent.name
     shutil.make_archive(str(zip_file), 'zip', file.parent)
     print(f'wrote {zip_file}')
 
