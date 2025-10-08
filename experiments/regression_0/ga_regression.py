@@ -706,7 +706,7 @@ def submit(file: Path):
         error=str(f / 'condor.$(ProcId).err'),
         log=str(f / 'condor.$(ProcId).log'),
         request_cpus="4",
-        request_memory="1GB",  # how much memory we want
+        request_memory="4GB",  # how much memory we want
         Request_GPUs='1',
         # request_disk="128MB",  # how much disk space we want
     ))
