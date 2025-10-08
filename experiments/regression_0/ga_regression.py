@@ -625,7 +625,7 @@ def generate():
     spec = specs(root=root)[9]
 
     opts = Options.for_timestamp(
-        n_epoch=2,
+        n_epoch=100,
         mesh_file_mode='simplified',
         train_frac=0.90,
 
@@ -667,7 +667,8 @@ def generate():
     torch.save(metadata, final)
 
     print(f'{len(metas)} experiments to run')
-    print(final)
+    pyfile = Path(__file__).name
+    print(f'python {pyfile} submit {final}')
 
 
 @cli.command()
@@ -714,6 +715,15 @@ def submit(file: Path):
     schedd = htcondor.Schedd()  # noqa
     submit_result = schedd.submit(job, count=n)
     print(f'cluster_id = {submit_result.cluster()}')
+
+
+@cli.command()
+@click.argument('file', type=click.Path(exists=True, file_okay=True, dir_okay=False, resolve_path=True))
+def compress(file: Path):
+    import shutil
+    zip_file = file.parent.parent / (file.parent.name + '.zip')
+    shutil.make_archive(str(zip_file), 'zip', file.parent)
+    print(f'wrote {zip_file}')
 
 
 if __name__ == '__main__':
