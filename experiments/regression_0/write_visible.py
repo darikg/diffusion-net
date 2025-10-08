@@ -7,7 +7,7 @@ from seagullmesh import Mesh3
 import pandas as pd
 from tqdm import tqdm
 
-from experiments.regression_0.ga_regression import specs
+from ga_regression import specs
 
 spec = specs()[9]
 
