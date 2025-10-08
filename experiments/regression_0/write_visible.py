@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from ga_regression import specs
 
-spec = specs()[9]
+spec = specs(root=r"/home/darik/resynth")[9]
 
 file = spec.data_file
 root = file.parent
