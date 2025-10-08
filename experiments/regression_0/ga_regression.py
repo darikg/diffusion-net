@@ -721,6 +721,7 @@ def submit(file: Path):
 @click.argument('file', type=click.Path(exists=True, file_okay=True, dir_okay=False, resolve_path=True))
 def compress(file: Path):
     import shutil
+    file = Path(file)
     zip_file = file.parent.parent / (file.parent.name + '.zip')
     shutil.make_archive(str(zip_file), 'zip', file.parent)
     print(f'wrote {zip_file}')
