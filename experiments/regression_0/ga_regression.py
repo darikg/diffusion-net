@@ -157,8 +157,9 @@ class Metadata:
 
     def make_model(self, n_channels_out: int = 1) -> DiffusionNet:
         C_in = 3 if self.input_features == 'xyz' else 16
-        if self.use_visible:
+        if self.use_visible and self.use_visible.feature:
             C_in += 1
+
         if self.use_color:
             C_in += 4
 
