@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from functools import cached_property
+from contextlib import contextmanager
+
 import PIL
 import pyvista as pv
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
 
-from experiments.regression_0.analysis import Reader, Readers
+from analysis import Reader, Readers
 from ga_dataset import *
 from ga_regression import *
 

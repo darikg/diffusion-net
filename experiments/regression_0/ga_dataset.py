@@ -66,9 +66,9 @@ def apply_fit_fns(responses: pd.DataFrame, fit_fns: list[Callable[[Series], Seri
 WeightErrorMode = Literal['response', 'binned']
 
 class UseVisibleMode(NamedTuple):
-    feature: bool
-    shuffled: bool
-    multiply: bool
+    feature: bool = None
+    shuffled: bool = None
+    multiply: bool = None
 
     def __str__(self):
         return f'UseVisible(shuffled={self.shuffled}, multiply={self.multiply})'

@@ -509,6 +509,7 @@ def specs(root=r"D:\resynth"):
 
     return {
         9: DataSpec(
+
             data_file=root / r"run_09_10/run00009_resynth/run00009_resynth.hdf",
             channel=(29, 2, 19, 31, 0, 23, 12, 14, 18, 8),
             # trained=TrainedSpec(Path(r"D:/resynth/run_09_10/run00009_resynth/2025-08-08-12-28-22/opts_and_metadata.pt"), 5),
